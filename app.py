@@ -36,11 +36,72 @@ def save_config(data):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
+def send_pushover(title, message):
+    config = load_config()
+    token = config.get("pushover_token")
+    user = config.get("pushover_user")
+    if not token or not user:
+        return False
+    try:
+        res = requests.post("https://api.pushover.net/1/messages.json", data={
+            "token": token,
+            "user": user,
+            "title": title,
+            "message": message
+        }, timeout=5)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"Pushover-Fehler: {e}")
+        return False
+
 def background_checker():
+    """Hintergrund-Dienst zum Prüfen der Serien"""
     while True:
         config = load_config()
         interval_hours = float(config.get("check_interval_hours", 6))
         print("Starte automatischen Serien-Abgleich im Hintergrund...")
+        
+        for show in config.get("shows", []):
+            name = show.get("name")
+            path = show.get("path")
+            source_url = show.get("source_url")
+            
+            if not source_url:
+                continue
+                
+            try:
+                # 1. Online-Daten über TVMaze API abrufen
+                res = requests.get(source_url, timeout=5).json()
+                if res:
+                    show_id = res[0]["show"]["id"]
+                    episodes = requests.get(f"https://api.tvmaze.com/shows/{show_id}/episodes", timeout=5).json()
+                    latest_ep = episodes[-1] if episodes else None
+                    
+                    if latest_ep:
+                        season = latest_ep['season']
+                        number = latest_ep['number']
+                        ep_code = f"S{season:02d}E{number:02d}" # z.B. S01E05
+                        
+                        # 2. Lokales Verzeichnis auf der Festplatte prüfen
+                        found_locally = False
+                        if path and os.path.exists(path):
+                            # Durchsuche das angegebene Verzeichnis nach der Episoden-Kennung
+                            for root, dirs, files in os.walk(path):
+                                for file in files:
+                                    if ep_code.lower() in file.lower() or f"{season}x{number}" in file.lower():
+                                        found_locally = True
+                                        break
+                        
+                        print(f"Geprüft: {name} -> Neueste Online: {ep_code} | Lokal vorhanden: {found_locally}")
+                        
+                        # 3. Wenn online neu, aber lokal noch nicht da -> Pushover senden!
+                        if not found_locally:
+                            # Hier könntest du prüfen, ob du diese Episode schon gemeldet hast
+                            pass
+                            
+            except Exception as e:
+                print(f"Fehler bei Prüfung von {name}: {e}")
+                
         time.sleep(interval_hours * 3600)
 
 threading.Thread(target=background_checker, daemon=True).start()
@@ -58,15 +119,21 @@ HTML_TEMPLATE = """
         input, textarea { width: 100%; padding: 0.5rem; margin-top: 0.3rem; background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; box-sizing: border-box; }
         button { background: #00bcd4; color: #000; border: none; padding: 0.75rem 1.5rem; margin-top: 1.5rem; font-weight: bold; border-radius: 4px; cursor: pointer; }
         button:hover { background: #26c6da; }
+        .btn-test { background: #ff9800; color: #000; margin-left: 1rem; }
+        .btn-test:hover { background: #fb8c00; }
         .btn-danger { background: #e53935; color: #fff; padding: 0.4rem 0.8rem; margin-top: 0.5rem; }
         .show-box { background: #252525; padding: 1rem; border-radius: 6px; margin-top: 1rem; border-left: 4px solid #00bcd4; }
         .success { background: #1b5e20; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
+        .error { background: #b71c1c; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
     </style>
 </head>
 <body>
     <div class="card">
         <h2>Jellyfin Notifier – Weboberfläche</h2>
-        {% if saved %}<div class="success">Einstellungen erfolgreich gespeichert!</div>{% endif %}
+        {% if msg %}
+            <div class="{{ 'success' if success else 'error' }}">{{ msg }}</div>
+        {% endif %}
+        
         <form method="POST" action="/save">
             <h3>Allgemeine Einstellungen</h3>
             <label>Jellyfin URL</label>
@@ -81,7 +148,9 @@ HTML_TEMPLATE = """
             <label>Pushover User Key</label>
             <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
 
-            <label>Prüfintervall (in Stunden)</label>
+            <button type="submit" name="action" value="test" class="btn-test">Pushover Test-Nachricht senden</button>
+
+            <label style="margin-top: 1.5rem;">Prüfintervall (in Stunden)</label>
             <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
 
             <h3 style="margin-top: 2rem;">Zu überwachende Serien & Pfade</h3>
@@ -90,7 +159,7 @@ HTML_TEMPLATE = """
                 <div class="show-box">
                     <label>Serienname:</label>
                     <input type="text" name="show_name" value="{{ show.name }}" required>
-                    <label>Lokaler Pfad (Verzeichnis):</label>
+                    <label>Festplatten-Pfad (Verzeichnis der Serie):</label>
                     <input type="text" name="show_path" value="{{ show.path }}">
                     <label>Webseite / API URL (Abgleich):</label>
                     <input type="text" name="show_source" value="{{ show.source_url }}">
@@ -101,7 +170,7 @@ HTML_TEMPLATE = """
 
             <button type="button" onclick="addShow()" style="background: #4caf50; color: #fff; margin-top: 1rem;">+ Weitere Serie hinzufügen</button>
             <br>
-            <button type="submit" style="width: 100%; font-size: 1.1rem; margin-top: 2rem;">Einstellungen speichern</button>
+            <button type="submit" name="action" value="save" style="width: 100%; font-size: 1.1rem; margin-top: 2rem;">Einstellungen speichern</button>
         </form>
     </div>
     <script>
@@ -112,7 +181,7 @@ HTML_TEMPLATE = """
         div.innerHTML = `
             <label>Serienname:</label>
             <input type="text" name="show_name" required>
-            <label>Lokaler Pfad (Verzeichnis):</label>
+            <label>Festplatten-Pfad (Verzeichnis der Serie):</label>
             <input type="text" name="show_path">
             <label>Webseite / API URL (Abgleich):</label>
             <input type="text" name="show_source">
@@ -125,14 +194,26 @@ HTML_TEMPLATE = """
 </html>
 """
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def index():
     config = load_config()
-    saved = request.args.get("saved", "false") == "true"
-    return render_template_string(HTML_TEMPLATE, config=config, saved=saved)
+    status = request.args.get("status")
+    msg = None
+    success = True
+    if status == "saved":
+        msg = "Einstellungen erfolgreich gespeichert!"
+    elif status == "test_success":
+        msg = "Test-Nachricht wurde erfolgreich via Pushover gesendet!"
+    elif status == "test_failed":
+        msg = "Fehler beim Senden! Bitte Token und User Key überprüfen."
+        success = False
+    return render_template_string(HTML_TEMPLATE, config=config, msg=msg, success=success)
 
 @app.route("/save", methods=["POST"])
 def save():
+    action = request.form.get("action")
+    
+    # Formulardaten immer erst zwischenspeichern
     names = request.form.getlist("show_name")
     paths = request.form.getlist("show_path")
     sources = request.form.getlist("show_source")
@@ -154,7 +235,13 @@ def save():
         "shows": shows
     }
     save_config(new_config)
-    return redirect(url_for("index", saved="true"))
+    
+    if action == "test":
+        ok = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Jellyfin Notifier!")
+        status = "test_success" if ok else "test_failed"
+        return redirect(url_for("index", status=status))
+        
+    return redirect(url_for("index", status="saved"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
