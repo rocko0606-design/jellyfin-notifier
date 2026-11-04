@@ -5,7 +5,6 @@ import time
 import re
 import requests
 import xml.etree.ElementTree as ET
-import myjdapi
 from flask import Flask, render_template_string, request, redirect, url_for, Response
 
 app = Flask(__name__)
@@ -56,6 +55,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
+    """Übergibt den Hoster-Link direkt über die MyJDownloader REST-API (ohne Zusatzpakete)"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -63,32 +63,74 @@ def send_to_jdownloader(url, package_name):
     
     if not email or not password or not url:
         return False
-    try:
-        jd = myjdapi.Myjdapi()
-        jd.connect(email, password)
-        devices = jd.list_devices()
-        if not devices:
-            print("MyJDownloader: Kein Gerät gefunden.")
-            return False
         
-        device = None
+    try:
+        session = requests.Session()
+        
+        # 1. Verbindung herstellen / Token holen
+        auth_res = session.post("https://api.jdownloader.org/my/connect", data={
+            "email": email,
+            "password": password,
+            "app": "jellyfin-notifier"
+        }, timeout=10)
+        
+        if auth_res.status_code != 200:
+            print("MyJDownloader: Verbindung fehlgeschlagen.")
+            return False
+            
+        session_token = auth_res.json().get("sessiontoken")
+        if not session_token:
+            return False
+            
+        # 2. Geräte abfragen
+        dev_res = session.get(f"https://api.jdownloader.org/my/listdevices?sessiontoken={session_token}", timeout=10)
+        devices = dev_res.json().get("list", [])
+        
+        if not devices:
+            print("MyJDownloader: Kein JDownloader-Gerät gefunden.")
+            return False
+            
+        target_device = devices[0]
         if device_name:
             for d in devices:
                 if d.get("name") == device_name:
-                    device = jd.get_device(d["name"])
+                    target_device = d
                     break
-        if not device:
-            device = jd.get_device(devices[0]["name"])
+                    
+        device_id = target_device.get("id")
+        
+        # 3. Direktverbindung zum Gerät (Device-Session)
+        dev_connect = session.post(f"https://api.jdownloader.org/t_{session_token}_{device_id}/connect", data={
+            "email": email,
+            "password": password
+        }, timeout=10)
+        
+        if dev_connect.status_code != 200:
+            print("MyJDownloader: Konnte keine Verbindung zum JDownloader-Gerät aufbauen.")
+            return False
             
-        device.linkgrabber.add_links([{
-            "link": url,
-            "packageName": package_name
-        }])
-        print(f"Link an JDownloader übergeben: {url}")
-        return True
+        device_session = dev_connect.json().get("sessiontoken")
+        
+        # 4. Link an den Linkgrabber senden
+        add_res = session.post(
+            f"https://api.jdownloader.org/t_{session_token}_{device_id}/linkgrabber/addLinks",
+            params={"sessiontoken": device_session},
+            json={
+                "links": url,
+                "packageName": package_name,
+                "autoStart": False
+            },
+            timeout=10
+        )
+        
+        if add_res.status_code == 200:
+            print(f"Link erfolgreich an JDownloader übergeben: {url}")
+            return True
+            
     except Exception as e:
-        print(f"MyJDownloader Fehler: {e}")
-        return False
+        print(f"MyJDownloader REST-API Fehler: {e}")
+        
+    return False
 
 def extract_hoster_link(release_page_url):
     """Ruft die Release-Seite auf und fischt den echten Hoster-Link (z.B. filer.net) heraus"""
