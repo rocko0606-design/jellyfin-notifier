@@ -155,7 +155,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte Smart-Abgleich mit Diagnose-Logs...")
+    print("Starte Smart-Abgleich mit Episoden-Diagnose...")
     results = []
     
     if not library_id:
@@ -202,15 +202,15 @@ def perform_check():
             
         norm_feed_name = normalize_name(feed_show_name)
         matched_show = shows_dict.get(norm_feed_name)
-        
-        # DEBUG AUSGABE FÜR JEDEN FEED-EINTRAG IN DEN PORTAINER-LOGS:
-        print(f"DEBUG-CHECK -> Raw: '{raw_title}' | Geparster Name: '{feed_show_name}' (Normiert: '{norm_feed_name}') | Ep: {ep_code} | Match: {matched_show['name'] if matched_show else 'KEIN TREFFER'}")
                 
         if matched_show:
             show_name = matched_show["name"]
             series_id = matched_show["id"]
             
             existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
+            
+            # DIAGNOSE-LOG IN PORTAINER
+            print(f"ANALYSE -> Serie: '{show_name}' | Gesuchte Episode: {ep_code} | In Jellyfin vorhanden: {sorted(list(existing_eps))}")
             
             if ep_code not in existing_eps:
                 missing_found += 1
@@ -329,7 +329,7 @@ def index():
     elif status == "test_success":
         msg = "Test-Nachricht wurde erfolgreich via Pushover gesendet!"
     elif status == "test_failed":
-        msg = "Fehler beim Senden! Bitte Token und User Key überprüfen."
+        msg = "Fehler beim Sended! Bitte Token und User Key überprüfen."
     
     return render_template_string(HTML_TEMPLATE, config=config, libraries=libraries, msg=msg, results=app.config.get("LAST_RESULTS"))
 
