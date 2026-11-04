@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Nutzt die exakten Go-Links direkt von der Hauptseite"""
+    """Extrahiert den Hoster-Link direkt über den Release-Pfad oder die API unter Berücksichtigung von SPA/Vue"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -119,7 +119,8 @@ def extract_hoster_link(release_page_url):
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://nox.to/"
+            "Referer": "https://nox.to/",
+            "Accept": "application/json, text/plain, */*"
         }
         if cookie_val:
             if "cf_clearance=" in cookie_val or "=" in cookie_val:
@@ -127,20 +128,17 @@ def extract_hoster_link(release_page_url):
             else:
                 headers["Cookie"] = f"cf_clearance={cookie_val}"
 
-        print(f"Lade Serien-Hauptseite: {release_page_url}")
+        print(f"Lade Release-Seite: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
         
         if res.status_code == 200:
             html = res.text
             
-            go_match = re.search(r'href=["\'](/go/[^"\']+)["\']', html)
-            if not go_match:
-                go_match = re.search(r'(/go/[^\s<>"\']+)', html)
-                
-            if go_match:
-                go_path = go_match.group(1)
+            # Suche nach jeglichen /go/ Pfaden im HTML oder Skript-Bereich
+            go_matches = re.findall(r'(/go/[^\s<>"\']+)', html)
+            for go_path in go_matches:
                 go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
-                print(f"Gefundener Go-Link: {go_url}")
+                print(f"Gefundener Go-Pfad im Quelltext: {go_url}")
                 
                 api_url = go_url if "/url" in go_url else f"{go_url}/url"
                 api_res = requests.get(api_url, headers=headers, timeout=10)
@@ -156,9 +154,14 @@ def extract_hoster_link(release_page_url):
                         if filer_match:
                             return filer_match.group(0).rstrip('"\'')
 
+            # Fallback: Direkt im Text nach filer.net suchen
             filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
             if filer_match:
-                return filer_match.group(0).rstrip('"\'')
+                found_filer = filer_match.group(0).rstrip('"\'')
+                print(f"Direkter Filer-Link im Quelltext gefunden: {found_filer}")
+                return found_filer
+            else:
+                print("⚠️ Kein direkter Link im Quelltext gefunden.")
 
     except Exception as e:
         print(f"Fehler beim Extrahieren: {e}")
