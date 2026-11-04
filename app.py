@@ -108,23 +108,25 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def clean_feed_title(raw_title):
-    """Wandelt Release-Formate wie 'Small.Prophets.S01E06.German...' in saubere Namen und Episoden um"""
+    """Bereinigt den Feed-Titel zuverlässig (ersetzt Punkte durch Leerzeichen und trennt SxxExx ab)"""
+    # Zuerst alle Punkte und Unterstriche im gesamten Titel durch Leerzeichen ersetzen
+    normalized = raw_title.replace('.', ' ').replace('_', ' ')
+    
+    # Staffel & Episode im normalisierten Text suchen (z.B. S01E06)
+    match_s = re.search(r's(\d+)\s*e(\d+)', normalized, re.IGNORECASE)
+    match_x = re.search(r'(\d+)x(\d+)', normalized)
+    
     ep_code = None
-    match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
-    match_x = re.search(r'(\d+)x(\d+)', raw_title)
+    raw_name = normalized
     
     if match_s:
         ep_code = f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}"
-        raw_name = raw_title[:match_s.start()]
+        raw_name = normalized[:match_s.start()]
     elif match_x:
         ep_code = f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}"
-        raw_name = raw_title[:match_x.start()]
-    else:
-        raw_name = raw_title
+        raw_name = normalized[:match_x.start()]
 
-    clean_name = raw_name.replace('.', ' ').replace('_', ' ').strip()
-    clean_name = re.sub(r'\s+', ' ', clean_name)
-    
+    clean_name = re.sub(r'\s+', ' ', raw_name).strip()
     return clean_name, ep_code
 
 def perform_check():
@@ -134,7 +136,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte optimierten RSS-Feed Abgleich mit Debug-Ausgabe...")
+    print("Starte präzisen Smart-Abgleich...")
     results = []
     
     if not library_id:
@@ -144,6 +146,7 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
+    # Erstelle ein Dictionary: Schlüssel ist der Kleinbuchstaben-Name der Serie aus Jellyfin
     shows_dict = {show["name"].lower(): show for show in local_shows}
 
     feed_items = []
@@ -164,10 +167,6 @@ def perform_check():
                     
                 if text_to_check:
                     feed_items.append(text_to_check)
-            
-            print(f"DEBUG: {len(feed_items)} Einträge aus dem RSS-Feed geladen.")
-            if feed_items:
-                print(f"DEBUG Erster Feed-Eintrag: {feed_items[0]}")
         else:
             return [{"text": f"❌ Fehler beim Laden des RSS-Feeds (Status {res.status_code})", "class": "warning"}]
     except Exception as e:
@@ -180,10 +179,12 @@ def perform_check():
         if not ep_code or not feed_show_name:
             continue
             
-        matched_show = None
-        feed_lower = feed_show_name.lower().strip()
+        feed_lower = feed_show_name.lower()
         
+        # Prüfen, ob der bereinigte Feed-Name zu einer Jellyfin-Serie passt
+        matched_show = None
         for local_name_lower, show_info in shows_dict.items():
+            # Exakter Treffer oder der Jellyfin-Name ist im Feed-Namen enthalten
             if local_name_lower == feed_lower or local_name_lower in feed_lower:
                 matched_show = show_info
                 break
