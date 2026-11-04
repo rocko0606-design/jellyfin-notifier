@@ -109,32 +109,31 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def clean_feed_title(raw_title):
-    """Extrahiert den sauberen Serientitel und die Episodenkennung absolut fehlersicher"""
-    # 1. Wenn ein Gedankenstrich da ist, nimm den Teil links davon
+    """Extrahiert exakt den Serientitel und die Episodenkennung aus dem Feed"""
+    # Beispiel-Feed-Format: "NCIS: Origins — NCIS.Origins.S02E17..."
+    # Wir nehmen den linken Teil vor dem '—' als sauberen Anzeigenamen der Serie
     if "—" in raw_title:
-        base_text = raw_title.split("—")[0].strip()
+        show_part = raw_title.split("—")[0].strip()
     else:
-        base_text = raw_title
+        # Falls kein Strich da ist, nehmen wir den Dateinamen vor SxxExx
+        match_s = re.search(r's\d+\s*e\d+', raw_title, re.IGNORECASE)
+        if match_s:
+            show_part = raw_title[:match_s.start()].replace('.', ' ').replace('_', ' ')
+        else:
+            show_part = raw_title
 
-    # 2. SxxExx oder NxNN Kennung finden
+    # Episodenkennung (z.B. S01E06 oder S02E17) ermitteln
     match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
     match_x = re.search(r'(\d+)x(\d+)', raw_title)
     
     ep_code = None
     if match_s:
         ep_code = f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}"
-        # Schneide alles ab SxxExx ab, falls kein Gedankenstrich vorhanden war
-        if "—" not in raw_title:
-            base_text = raw_title[:match_s.start()]
     elif match_x:
         ep_code = f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}"
-        if "—" not in raw_title:
-            base_text = raw_title[:match_x.start()]
 
-    # 3. Alle Punkte und Unterstriche konsequent in Leerzeichen umwandeln
-    clean_name = base_text.replace('.', ' ').replace('_', ' ')
-    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-    
+    # Bereinige den Serientitel (Doppelte Leerzeichen entfernen, etc.)
+    clean_name = re.sub(r'\s+', ' ', show_part).strip()
     return clean_name, ep_code
 
 def perform_check():
@@ -144,7 +143,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte intelligenten Bibliotheks-Lückenabgleich...")
+    print("Starte präzisen Smart-Abgleich...")
     results = []
     
     if not library_id:
@@ -154,6 +153,7 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
+    # Erstelle ein Dictionary für den Abgleich (Schlüssel in Kleinbuchstaben)
     shows_dict = {show["name"].lower().strip(): show for show in local_shows}
 
     feed_items = []
@@ -188,14 +188,9 @@ def perform_check():
             
         feed_lower = feed_show_name.lower().strip()
         
-        # Zuverlässiges Mapping für abweichende Schreibweisen zwischen Feed und Jellyfin
-        if "ncis origins" in feed_lower or "ncis: origins" in feed_lower:
-            feed_lower = "navy cis: origins"
-        elif feed_lower == "ncis":
-            feed_lower = "navy cis"
-
         matched_show = None
         for local_name_lower, show_info in shows_dict.items():
+            # Exakter Treffer oder Teilstring-Treffer in beide Richtungen
             if (local_name_lower == feed_lower or 
                 local_name_lower in feed_lower or 
                 feed_lower in local_name_lower):
