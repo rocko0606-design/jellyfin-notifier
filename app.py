@@ -110,19 +110,22 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Holt sich den SLUG und AP-Token direkt über die Release-ID und fragt die API ab"""
+    """Holt sich den SLUG und AP-Token direkt über die Release-ID und nutzt das Cloudflare-Cookie"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
         config = load_config()
-        cookie_val = config.get("website_cookie", "")
+        cookie_val = config.get("website_cookie", "").strip()
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://nox.to/"
         }
         if cookie_val:
-            headers["Cookie"] = cookie_val
+            if "cf_clearance=" in cookie_val or "=" in cookie_val:
+                headers["Cookie"] = cookie_val
+            else:
+                headers["Cookie"] = f"cf_clearance={cookie_val}"
 
         release_id_match = re.search(r'release=(\d+)', release_page_url)
         if not release_id_match:
@@ -131,9 +134,10 @@ def extract_hoster_link(release_page_url):
         release_id = release_id_match.group(1)
         
         outbound_url = f"https://nox.to/out/{release_id}"
-        print(f"Versuche direkten Outbound-Pfad: {outbound_url}")
+        print(f"Versuche direkten Outbound-Pfad mit Cookie: {outbound_url}")
         
         res = requests.get(outbound_url, headers=headers, timeout=10)
+        print(f"Outbound Status: {res.status_code}, Länge: {len(res.text)}")
         
         if res.status_code != 200 or "const SLUG" not in res.text:
             print(f"Lade Hauptseite zur Link-Suche: {release_page_url}")
@@ -170,7 +174,7 @@ def extract_hoster_link(release_page_url):
                         print(f"Echter Hoster-Link erhalten: {target_url}")
                         return target_url
             else:
-                print("⚠️ Immer noch kein SLUG im Quelltext gefunden. Ist das Cookie gültig?")
+                print("⚠️ Kein SLUG im Quelltext gefunden. Prüfe, ob das Cookie noch aktiv ist.")
 
         filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
         if filer_match:
