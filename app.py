@@ -88,6 +88,7 @@ def get_library_series_with_ids(jellyfin_url, api_key, library_id):
     return []
 
 def get_existing_episodes(jellyfin_url, api_key, series_id):
+    """Holt nur Episoden, die physisch vorhanden sind (Erkennung an RunTimeTicks > 0)"""
     headers = {
         "X-Emby-Token": api_key,
         "Authorization": f'MediaBrowser Token="{api_key}"'
@@ -99,14 +100,14 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
             data = res.json()
             existing = set()
             for ep in data.get("Items", []):
-                path = ep.get("Path")
-                location_type = ep.get("LocationType")
+                season = ep.get("ParentIndexNumber")
+                number = ep.get("IndexNumber")
+                runtime = ep.get("RunTimeTicks") or 0
                 
-                if path and location_type != "Virtual":
-                    season = ep.get("ParentIndexNumber")
-                    number = ep.get("IndexNumber")
-                    if season is not None and number is not None:
-                        existing.add(f"S{season:02d}E{number:02d}")
+                # Nur echte heruntergeladene Dateien haben eine Spieldauer (RunTimeTicks > 0)
+                # Virtuelle Jellyfin-Zukunftsplatzhalter haben 0 und werden ignoriert
+                if season is not None and number is not None and runtime > 0:
+                    existing.add(f"S{season:02d}E{number:02d}")
             return existing
     except Exception as e:
         print(f"Fehler beim Abrufen der Episoden für ID {series_id}: {e}")
@@ -126,13 +127,12 @@ def normalize_name(name):
     return re.sub(r'[^a-z0-9]', '', n)
 
 def clean_feed_title(raw_title):
-    """Extrahiert den Serientitel und alle Episoden aus einem Multi-Paket (z.B. S01E04-E08)"""
+    """Extrahiert den Serientitel und alle Episoden aus dem Release (unterstützt auch Multi-Pakete wie S01E04-E08)"""
     if "—" in raw_title:
         base_text = raw_title.split("—")[0].strip()
     else:
         base_text = raw_title
 
-    # Multi-Episoden-Bereich prüfen (z.B. S01E04-E08)
     multi_match = re.search(r's(\d+)\s*e(\d+)\s*-\s*(?:e)?(\d+)', raw_title, re.IGNORECASE)
     
     ep_codes = []
@@ -145,7 +145,6 @@ def clean_feed_title(raw_title):
         if "—" not in raw_title:
             base_text = raw_title[:multi_match.start()]
     else:
-        # Einzelne Episode prüfen
         match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
         match_x = re.search(r'(\d+)x(\d+)', raw_title)
         
@@ -226,11 +225,8 @@ def perform_check():
             series_id = matched_show["id"]
             
             existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
-            
-            # Prüfe, welche konkreten Episoden aus dem Paket in Jellyfin fehlen
             missing_in_release = [ep for ep in ep_codes if ep not in existing_eps]
             
-            # WICHTIG: Nur Alarm schlagen, wenn wirklich mind. eine Episode aus dem Paket fehlt!
             if missing_in_release:
                 missing_found += 1
                 ep_str = ", ".join(missing_in_release)
