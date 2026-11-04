@@ -5,7 +5,7 @@ import time
 import re
 import requests
 import xml.etree.ElementTree as ET
-from flask import Flask, render_template_string, request, redirect, url_for
+from flask import Flask, render_template_string, request, redirect, url_for, Response
 
 app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
@@ -246,13 +246,25 @@ def background_checker():
 
 threading.Thread(target=background_checker, daemon=True).start()
 
+# Erzeugt ein schickes, thematisches SVG-Logo (Glocke + Filmstreifen in Cyan/Blau)
+LOGO_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <path d="M256 96c-61.85 0-112 50.15-112 112v48.63L106.67 312A32 32 0 00133.33 360h245.34a32 32 0 0026.66-48L368 256.63V208c0-61.85-50.15-112-112-112z" fill="#06b6d4"/>
+  <path d="M224 400a32 32 0 0064 0h-64z" fill="#3b82f6"/>
+  <circle cx="360" cy="152" r="32" fill="#ef4444"/>
+</svg>'''
+
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="de">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Jellyfin Notifier – Dashboard</title>
+    <title>Jellyfin Notifier</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/svg+xml" href="/logo.svg">
+    <link rel="apple-touch-icon" href="/logo.svg">
+    <meta name="theme-color" content="#0f172a">
     <style>
         :root {
             --bg-color: #0f172a;
@@ -293,9 +305,16 @@ HTML_TEMPLATE = """
             margin-bottom: 2rem;
         }
 
+        .logo-img {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 0.75rem;
+            filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));
+        }
+
         header h1 {
             font-size: 1.8rem;
-            margin: 0 0 0.5rem 0;
+            margin: 0 0 0.3rem 0;
             color: #fff;
             letter-spacing: -0.025em;
         }
@@ -477,7 +496,8 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <header>
-            <h1>🎬 Jellyfin Notifier</h1>
+            <img src="/logo.svg" alt="Logo" class="logo-img">
+            <h1>Jellyfin Notifier</h1>
             <p>Automatisierter Smart-Lücken-Detektor für deine Medienbibliothek</p>
         </header>
 
@@ -535,7 +555,7 @@ HTML_TEMPLATE = """
                     <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen</button>
                 </div>
 
-                <button type="submit" name="action" value="save" class="btn-primary">Einstellungen speichern</button>
+                <button type="submit" name="action" value="save" style="background-color: var(--accent); color: #0f172a; width: 100%; margin-top: 1.5rem; padding: 0.85rem; font-size: 1rem;">Einstellungen speichern</button>
             </form>
 
             {% if results %}
@@ -571,6 +591,29 @@ def index():
         msg = "Fehler beim Senden! Bitte Token und User Key überprüfen."
     
     return render_template_string(HTML_TEMPLATE, config=config, libraries=libraries, msg=msg, results=app.config.get("LAST_RESULTS"))
+
+@app.route("/logo.svg")
+def serve_logo():
+    return Response(LOGO_SVG, mimetype="image/svg+xml")
+
+@app.route("/manifest.json")
+def serve_manifest():
+    manifest = {
+        "name": "Jellyfin Notifier",
+        "short_name": "Notifier",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0f172a",
+        "theme_color": "#0f172a",
+        "icons": [
+            {
+                "src": "/logo.svg",
+                "sizes": "any",
+                "type": "image/svg+xml"
+            }
+        ]
+    }
+    return Response(json.dumps(manifest), mimetype="application/json")
 
 @app.route("/save", methods=["POST"])
 def save():
