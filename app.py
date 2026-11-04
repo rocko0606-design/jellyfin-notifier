@@ -205,4 +205,122 @@ HTML_TEMPLATE = """
         button { background: #00bcd4; color: #000; border: none; padding: 0.75rem 1.5rem; margin-top: 1rem; font-weight: bold; border-radius: 4px; cursor: pointer; }
         button:hover { background: #26c6da; }
         .btn-test { background: #ff9800; color: #000; margin-right: 0.5rem; }
-        .btn-check { background: #4caf50; color: #fff; margin-
+        .btn-check { background: #4caf50; color: #fff; margin-right: 0.5rem; }
+        .btn-clear { background: #e53935; color: #fff; float: right; padding: 0.4rem 0.8rem; margin-top: 0; font-size: 0.9rem; }
+        .success { background: #1b5e20; color: #a5d6a7; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
+        .missing { background: #e65100; color: #ffe0b2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: bold; }
+        .warning { background: #b71c1c; color: #ffcdd2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
+        .status-box { margin-top: 1.5rem; border-top: 1px solid #333; padding-top: 1rem; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Jellyfin Notifier – Präziser Episoden-Abgleich</h2>
+        {% if msg %}
+            <div class="success">{{ msg }}</div>
+        {% endif %}
+        
+        <form method="POST" action="/save">
+            <h3>Allgemeine Einstellungen</h3>
+            <label>Jellyfin URL</label>
+            <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
+
+            <label>Jellyfin API-Key</label>
+            <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
+
+            <label>Pushover App Token</label>
+            <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+
+            <label>Pushover User Key</label>
+            <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+
+            <label>RSS-Feed URL</label>
+            <input type="text" name="rss_url" value="{{ config.rss_url }}" required>
+
+            <label>Zu überwachende Jellyfin-Bibliothek</label>
+            <select name="selected_library_id">
+                <option value="">-- Bitte wählen --</option>
+                {% for lib in libraries %}
+                    <option value="{{ lib.ItemId }}" {% if config.selected_library_id == lib.ItemId %}selected{% endif %}>{{ lib.Name }}</option>
+                {% endfor %}
+            </select>
+
+            <div style="margin-top: 1.5rem;">
+                <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht senden</button>
+                <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen (Manuell)</button>
+            </div>
+
+            <label style="margin-top: 1.5rem;">Prüfintervall (in Stunden)</label>
+            <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
+
+            <button type="submit" name="action" value="save" style="width: 100%; font-size: 1.1rem; margin-top: 2rem; background: #00bcd4;">Einstellungen speichern</button>
+        </form>
+
+        {% if results %}
+            <div class="status-box">
+                <div class="header-row">
+                    <h3 style="margin: 0;">Ergebnis des Abgleichs:</h3>
+                    <form method="POST" action="/clear" style="margin: 0;">
+                        <button type="submit" class="btn-clear">Ergebnisse löschen</button>
+                    </form>
+                </div>
+                {% for r in results %}
+                    <div class="{{ r.class }}">{{ r.text|safe }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+"""
+
+@app.route("/", methods=["GET"])
+def index():
+    config = load_config()
+    libraries = get_jellyfin_libraries(config.get("jellyfin_url"), config.get("jellyfin_api_key"))
+    status = request.args.get("status")
+    msg = None
+    if status == "saved":
+        msg = "Einstellungen & Bibliotheken erfolgreich aktualisiert!"
+    elif status == "test_success":
+        msg = "Test-Nachricht wurde erfolgreich via Pushover gesendet!"
+    elif status == "test_failed":
+        msg = "Fehler beim Senden! Bitte Token und User Key überprüfen."
+    
+    return render_template_string(HTML_TEMPLATE, config=config, libraries=libraries, msg=msg, results=app.config.get("LAST_RESULTS"))
+
+@app.route("/save", methods=["POST"])
+def save():
+    action = request.form.get("action")
+    
+    new_config = {
+        "jellyfin_url": request.form.get("jellyfin_url"),
+        "jellyfin_api_key": request.form.get("jellyfin_api_key"),
+        "pushover_token": request.form.get("pushover_token"),
+        "pushover_user": request.form.get("pushover_user"),
+        "rss_url": request.form.get("rss_url"),
+        "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
+        "selected_library_id": request.form.get("selected_library_id")
+    }
+    save_config(new_config)
+    
+    if action == "test":
+        ok = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Jellyfin Notifier!")
+        status = "test_success" if ok else "test_failed"
+        return redirect(url_for("index", status=status))
+        
+    elif action == "run_check":
+        results = perform_check()
+        app.config["LAST_RESULTS"] = results
+        return redirect(url_for("index"))
+        
+    return redirect(url_for("index", status="saved"))
+
+@app.route("/clear", methods=["POST"])
+def clear_results():
+    app.config["LAST_RESULTS"] = None
+    return redirect(url_for("index"))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
