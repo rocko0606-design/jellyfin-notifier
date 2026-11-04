@@ -88,7 +88,6 @@ def get_library_series_with_ids(jellyfin_url, api_key, library_id):
     return []
 
 def get_existing_episodes(jellyfin_url, api_key, series_id):
-    """Holt nur Episoden, die physisch vorhanden sind (Erkennung an RunTimeTicks > 0)"""
     headers = {
         "X-Emby-Token": api_key,
         "Authorization": f'MediaBrowser Token="{api_key}"'
@@ -104,8 +103,6 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
                 number = ep.get("IndexNumber")
                 runtime = ep.get("RunTimeTicks") or 0
                 
-                # Nur echte heruntergeladene Dateien haben eine Spieldauer (RunTimeTicks > 0)
-                # Virtuelle Jellyfin-Zukunftsplatzhalter haben 0 und werden ignoriert
                 if season is not None and number is not None and runtime > 0:
                     existing.add(f"S{season:02d}E{number:02d}")
             return existing
@@ -127,7 +124,6 @@ def normalize_name(name):
     return re.sub(r'[^a-z0-9]', '', n)
 
 def clean_feed_title(raw_title):
-    """Extrahiert den Serientitel und alle Episoden aus dem Release (unterstützt auch Multi-Pakete wie S01E04-E08)"""
     if "—" in raw_title:
         base_text = raw_title.split("—")[0].strip()
     else:
@@ -231,13 +227,13 @@ def perform_check():
                 missing_found += 1
                 ep_str = ", ".join(missing_in_release)
                 results.append({
-                    "text": f"🔔 '{show_name}' – Episoden <b>{ep_str}</b> fehlen noch in deiner Bibliothek! (Release: {raw_title})",
+                    "text": f"'{show_name}' – Episoden <b>{ep_str}</b> fehlen noch in deiner Bibliothek!<br><small style='color: #8c9ba5;'>Release: {raw_title}</small>",
                     "class": "missing"
                 })
                 send_pushover("Fehlende Episoden entdeckt!", f"Für '{show_name}' fehlen noch Episoden ({ep_str}) aus dem Release.")
 
     if missing_found == 0:
-        results.append({"text": f"✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
+        results.append({"text": "✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
         
     return results
 
@@ -255,80 +251,307 @@ HTML_TEMPLATE = """
 <html lang="de">
 <head>
     <meta charset="utf-8">
-    <title>Jellyfin Notifier – Smart Lücken-Detektor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Jellyfin Notifier – Dashboard</title>
     <style>
-        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 2rem; max-width: 800px; margin: auto; }
-        .card { background: #1e1e1e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 1.5rem; }
-        label { display: block; margin-top: 1rem; font-weight: bold; color: #b0bec5; }
-        input, select { width: 100%; padding: 0.5rem; margin-top: 0.3rem; background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; box-sizing: border-box; }
-        button { background: #00bcd4; color: #000; border: none; padding: 0.75rem 1.5rem; margin-top: 1rem; font-weight: bold; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #26c6da; }
-        .btn-test { background: #ff9800; color: #000; margin-right: 0.5rem; }
-        .btn-check { background: #4caf50; color: #fff; margin-right: 0.5rem; }
-        .btn-clear { background: #e53935; color: #fff; float: right; padding: 0.4rem 0.8rem; margin-top: 0; font-size: 0.9rem; }
-        .success { background: #1b5e20; color: #a5d6a7; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
-        .missing { background: #e65100; color: #ffe0b2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: bold; }
-        .warning { background: #b71c1c; color: #ffcdd2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
-        .status-box { margin-top: 1.5rem; border-top: 1px solid #333; padding-top: 1rem; }
-        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --border-color: #334155;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #06b6d4;
+            --accent-hover: #0891b2;
+            --success-bg: rgba(22, 101, 52, 0.2);
+            --success-border: #166534;
+            --success-text: #4ade80;
+            --missing-bg: rgba(194, 65, 12, 0.2);
+            --missing-border: #c2410c;
+            --missing-text: #fb923c;
+            --warning-bg: rgba(153, 27, 27, 0.2);
+            --warning-border: #991b1b;
+            --warning-text: #f87171;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 2rem 1rem;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 850px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        header h1 {
+            font-size: 1.8rem;
+            margin: 0 0 0.5rem 0;
+            color: #fff;
+            letter-spacing: -0.025em;
+        }
+
+        header p {
+            color: var(--text-muted);
+            margin: 0;
+            font-size: 0.95rem;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+            margin-bottom: 2rem;
+        }
+
+        .alert {
+            padding: 1rem 1.25rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            font-size: 0.95rem;
+            font-weight: 500;
+            border: 1px solid transparent;
+        }
+
+        .alert-success {
+            background-color: var(--success-bg);
+            border-color: var(--success-border);
+            color: var(--success-text);
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.25rem;
+        }
+
+        @media (min-width: 640px) {
+            .form-grid-2 {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 1rem;
+            }
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        label {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 0.4rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background-color: #0f172a;
+            border: 1px solid var(--border-color);
+            color: #fff;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            box-sizing: border-box;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
+        }
+
+        .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+        }
+
+        button {
+            padding: 0.75rem 1.25rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        .btn-primary {
+            background-color: var(--accent);
+            color: #0f172a;
+            width: 100%;
+            margin-top: 1rem;
+        }
+        .btn-primary:hover {
+            background-color: var(--accent-hover);
+        }
+
+        .btn-test {
+            background-color: #3b82f6;
+            color: #fff;
+        }
+        .btn-test:hover { background-color: #2563eb; }
+
+        .btn-check {
+            background-color: #10b981;
+            color: #fff;
+        }
+        .btn-check:hover { background-color: #059669; }
+
+        .btn-clear {
+            background-color: #ef4444;
+            color: #fff;
+            padding: 0.4rem 0.8rem;
+            font-size: 0.85rem;
+        }
+        .btn-clear:hover { background-color: #dc2626; }
+
+        .status-box {
+            margin-top: 2rem;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1.5rem;
+        }
+
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .header-row h3 {
+            margin: 0;
+            font-size: 1.1rem;
+            color: #fff;
+        }
+
+        .result-item {
+            padding: 1rem 1.25rem;
+            border-radius: 8px;
+            margin-bottom: 0.75rem;
+            font-size: 0.95rem;
+            border: 1px solid transparent;
+            line-height: 1.5;
+        }
+
+        .result-item.missing {
+            background-color: var(--missing-bg);
+            border-color: var(--missing-border);
+            color: var(--missing-text);
+        }
+
+        .result-item.success {
+            background-color: var(--success-bg);
+            border-color: var(--success-border);
+            color: var(--success-text);
+        }
+
+        .result-item.warning {
+            background-color: var(--warning-bg);
+            border-color: var(--warning-border);
+            color: var(--warning-text);
+        }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h2>Jellyfin Notifier – Lücken-Detektor</h2>
-        {% if msg %}
-            <div class="success">{{ msg }}</div>
-        {% endif %}
-        
-        <form method="POST" action="/save">
-            <h3>Allgemeine Einstellungen</h3>
-            <label>Jellyfin URL</label>
-            <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
+    <div class="container">
+        <header>
+            <h1>🎬 Jellyfin Notifier</h1>
+            <p>Automatisierter Smart-Lücken-Detektor für deine Medienbibliothek</p>
+        </header>
 
-            <label>Jellyfin API-Key</label>
-            <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
+        <div class="card">
+            {% if msg %}
+                <div class="alert alert-success">{{ msg }}</div>
+            {% endif %}
+            
+            <form method="POST" action="/save">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Jellyfin URL</label>
+                        <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
+                    </div>
 
-            <label>Pushover App Token</label>
-            <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+                    <div class="form-group">
+                        <label>Jellyfin API-Key</label>
+                        <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
+                    </div>
 
-            <label>Pushover User Key</label>
-            <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label>Pushover App Token</label>
+                            <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Pushover User Key</label>
+                            <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+                        </div>
+                    </div>
 
-            <label>RSS-Feed URL</label>
-            <input type="text" name="rss_url" value="{{ config.rss_url }}" required>
+                    <div class="form-group">
+                        <label>RSS-Feed URL</label>
+                        <input type="text" name="rss_url" value="{{ config.rss_url }}" required>
+                    </div>
 
-            <label>Zu überwachende Jellyfin-Bibliothek</label>
-            <select name="selected_library_id">
-                <option value="">-- Bitte wählen --</option>
-                {% for lib in libraries %}
-                    <option value="{{ lib.ItemId }}" {% if config.selected_library_id == lib.ItemId %}selected{% endif %}>{{ lib.Name }}</option>
-                {% endfor %}
-            </select>
+                    <div class="form-group">
+                        <label>Zu überwachende Jellyfin-Bibliothek</label>
+                        <select name="selected_library_id">
+                            <option value="">-- Bitte wählen --</option>
+                            {% for lib in libraries %}
+                                <option value="{{ lib.ItemId }}" {% if config.selected_library_id == lib.ItemId %}selected{% endif %}>{{ lib.Name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
 
-            <div style="margin-top: 1.5rem;">
-                <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht senden</button>
-                <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen (Manuell)</button>
-            </div>
-
-            <label style="margin-top: 1.5rem;">Prüfintervall (in Stunden)</label>
-            <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
-
-            <button type="submit" name="action" value="save" style="width: 100%; font-size: 1.1rem; margin-top: 2rem; background: #00bcd4;">Einstellungen speichern</button>
-        </form>
-
-        {% if results %}
-            <div class="status-box">
-                <div class="header-row">
-                    <h3 style="margin: 0;">Ergebnis des Abgleichs:</h3>
-                    <form method="POST" action="/clear" style="margin: 0;">
-                        <button type="submit" class="btn-clear">Ergebnisse löschen</button>
-                    </form>
+                    <div class="form-group">
+                        <label>Prüfintervall (in Stunden)</label>
+                        <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
+                    </div>
                 </div>
-                {% for r in results %}
-                    <div class="{{ r.class }}">{{ r.text|safe }}</div>
-                {% endfor %}
-            </div>
-        {% endif %}
+
+                <div class="btn-group">
+                    <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht</button>
+                    <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen</button>
+                </div>
+
+                <button type="submit" name="action" value="save" class="btn-primary">Einstellungen speichern</button>
+            </form>
+
+            {% if results %}
+                <div class="status-box">
+                    <div class="header-row">
+                        <h3>Ergebnis des Abgleichs</h3>
+                        <form method="POST" action="/clear" style="margin: 0;">
+                            <button type="submit" class="btn-clear">Löschen</button>
+                        </form>
+                    </div>
+                    {% for r in results %}
+                        <div class="result-item {{ r.class }}">{{ r.text|safe }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
     </div>
 </body>
 </html>
