@@ -81,7 +81,9 @@ def get_library_series_with_ids(jellyfin_url, api_key, library_id):
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            return [{"id": item.get("Id"), "name": item.get("Name")} for item in data.get("Items", []) if item.get("Name")]
+            shows = [{"id": item.get("Id"), "name": item.get("Name")} for item in data.get("Items", []) if item.get("Name")]
+            print(f"DEBUG: {len(shows)} Serien aus Jellyfin geladen: {[s['name'] for s in shows]}")
+            return shows
     except Exception as e:
         print(f"Fehler beim Abrufen der Serien: {e}")
     return []
@@ -108,11 +110,7 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def clean_feed_title(raw_title):
-    """Bereinigt den Feed-Titel zuverlässig (ersetzt Punkte durch Leerzeichen und trennt SxxExx ab)"""
-    # Zuerst alle Punkte und Unterstriche im gesamten Titel durch Leerzeichen ersetzen
     normalized = raw_title.replace('.', ' ').replace('_', ' ')
-    
-    # Staffel & Episode im normalisierten Text suchen (z.B. S01E06)
     match_s = re.search(r's(\d+)\s*e(\d+)', normalized, re.IGNORECASE)
     match_x = re.search(r'(\d+)x(\d+)', normalized)
     
@@ -136,7 +134,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte präzisen Smart-Abgleich...")
+    print("Starte präzisen Smart-Abgleich mit detaillierten Logs...")
     results = []
     
     if not library_id:
@@ -146,8 +144,7 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
-    # Erstelle ein Dictionary: Schlüssel ist der Kleinbuchstaben-Name der Serie aus Jellyfin
-    shows_dict = {show["name"].lower(): show for show in local_shows}
+    shows_dict = {show["name"].lower().strip(): show for show in local_shows}
 
     feed_items = []
     try:
@@ -167,6 +164,8 @@ def perform_check():
                     
                 if text_to_check:
                     feed_items.append(text_to_check)
+            
+            print(f"DEBUG: {len(feed_items)} Einträge aus dem RSS-Feed geladen.")
         else:
             return [{"text": f"❌ Fehler beim Laden des RSS-Feeds (Status {res.status_code})", "class": "warning"}]
     except Exception as e:
@@ -179,14 +178,14 @@ def perform_check():
         if not ep_code or not feed_show_name:
             continue
             
-        feed_lower = feed_show_name.lower()
+        feed_lower = feed_show_name.lower().strip()
+        print(f"DEBUG Feed-Parse -> Name: '{feed_lower}', Episode: '{ep_code}' (aus: {raw_title})")
         
-        # Prüfen, ob der bereinigte Feed-Name zu einer Jellyfin-Serie passt
         matched_show = None
         for local_name_lower, show_info in shows_dict.items():
-            # Exakter Treffer oder der Jellyfin-Name ist im Feed-Namen enthalten
-            if local_name_lower == feed_lower or local_name_lower in feed_lower:
+            if local_name_lower == feed_lower or local_name_lower in feed_lower or feed_lower in local_name_lower:
                 matched_show = show_info
+                print(f"  -> MATCH GEFUNDEN mit Jellyfin-Serie: '{show_info['name']}'")
                 break
                 
         if matched_show:
@@ -194,6 +193,7 @@ def perform_check():
             series_id = matched_show["id"]
             
             existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
+            print(f"  -> Vorhandene Episoden in Jellyfin für {show_name}: {list(existing_eps)[:5]}... (insgesamt {len(existing_eps)})")
             
             if ep_code not in existing_eps:
                 missing_found += 1
@@ -202,6 +202,8 @@ def perform_check():
                     "class": "missing"
                 })
                 send_pushover("Neue Episode fehlt in Jellyfin!", f"'{show_name}' ({ep_code}) ist online und fehlt noch in der Bibliothek.")
+            else:
+                print(f"  -> Episode {ep_code} ist bereits in Jellyfin vorhanden.")
 
     if missing_found == 0:
         results.append({"text": f"✅ Feed-Scan beendet – Keine fehlenden Episoden für deine Jellyfin-Serien im Feed entdeckt.", "class": "success"})
