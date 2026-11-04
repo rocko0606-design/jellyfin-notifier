@@ -5,6 +5,7 @@ import time
 import re
 import requests
 import xml.etree.ElementTree as ET
+import myjdownloader
 from flask import Flask, render_template_string, request, redirect, url_for, Response
 
 app = Flask(__name__)
@@ -15,6 +16,9 @@ DEFAULT_CONFIG = {
     "jellyfin_api_key": "",
     "pushover_token": "",
     "pushover_user": "",
+    "myjd_email": "",
+    "myjd_password": "",
+    "myjd_device_name": "",
     "check_interval_hours": 6,
     "rss_url": "https://nox.to/releases?type=series",
     "selected_library_id": ""
@@ -50,6 +54,59 @@ def send_pushover(title, message):
     except Exception as e:
         print(f"Pushover-Fehler: {e}")
         return False
+
+def send_to_jdownloader(url, package_name):
+    config = load_config()
+    email = config.get("myjd_email")
+    password = config.get("myjd_password")
+    device_name = config.get("myjd_device_name")
+    
+    if not email or not password or not url:
+        return False
+    try:
+        jd = myjdownloader.connect(email, password)
+        devices = jd.get_devices()
+        if not devices:
+            print("MyJDownloader: Kein Gerät gefunden.")
+            return False
+        
+        device = None
+        if device_name:
+            for d in devices:
+                if d.get("name") == device_name:
+                    device = jd.get_device(d["name"])
+                    break
+        if not device:
+            device = jd.get_device(devices[0]["name"])
+            
+        device.linkgrabber.add_links([{
+            "link": url,
+            "packageName": package_name
+        }])
+        print(Link an JDownloader übergeben: {url})
+        return True
+    except Exception as e:
+        print(f"MyJDownloader Fehler: {e}")
+        return False
+
+def extract_hoster_link(release_page_url):
+    """Ruft die Release-Seite auf und fischt den echten Hoster-Link (z.B. filer.net) heraus"""
+    if not release_page_url or "http" not in release_page_url:
+        return None
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(release_page_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            html = res.text
+            # Suche nach allen HTTP(S) Links im HTML
+            urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
+            for u in urls:
+                # Filtert gängige Hoster heraus
+                if any(hoster in u.lower() for hoster in ["filer.net", "rapidgator", "1fichier", "nitroflare"]):
+                    return u
+    except Exception as e:
+        print(f"Fehler beim Extrahieren des Hoster-Links von {release_page_url}: {e}")
+    return None
 
 def get_jellyfin_libraries(jellyfin_url, api_key):
     if not jellyfin_url or not api_key:
@@ -168,7 +225,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte präzisen Smart-Abgleich...")
+    print("Starte präzisen Smart-Abgleich mit JDownloader-Übergabe...")
     results = []
     
     if not library_id:
@@ -192,6 +249,7 @@ def perform_check():
             for item in root.findall(".//item"):
                 title_elem = item.find("title")
                 desc_elem = item.find("description")
+                link_elem = item.find("link")
                 
                 text_to_check = ""
                 if title_elem is not None and title_elem.text:
@@ -199,15 +257,20 @@ def perform_check():
                 elif desc_elem is not None and desc_elem.text:
                     text_to_check = desc_elem.text
                     
+                item_link = link_elem.text if link_elem is not None else ""
+                
                 if text_to_check:
-                    feed_items.append(text_to_check)
+                    feed_items.append({"title": text_to_check, "link": item_link})
         else:
             return [{"text": f"❌ Fehler beim Laden des RSS-Feeds (Status {res.status_code})", "class": "warning"}]
     except Exception as e:
         return [{"text": f"❌ Konnte RSS-Feed nicht verarbeiten: {e}", "class": "warning"}]
 
     missing_found = 0
-    for raw_title in feed_items:
+    for entry in feed_items:
+        raw_title = entry["title"]
+        item_link = entry["link"]
+        
         feed_show_name, ep_codes = clean_feed_title(raw_title)
         
         if not ep_codes or not feed_show_name:
@@ -226,11 +289,24 @@ def perform_check():
             if missing_in_release:
                 missing_found += 1
                 ep_str = ", ".join(missing_in_release)
+                
+                # Hoster-Link ermitteln und an JDownloader übergeben
+                jd_status_text = ""
+                hoster_url = extract_hoster_link(item_link)
+                if hoster_url:
+                    success = send_to_jdownloader(hoster_url, f"{show_name} - {ep_str}")
+                    if success:
+                        jd_status_text = " | 📥 <b>An JDownloader übergeben!</b>"
+                    else:
+                        jd_status_text = " | ⚠️ <i>Fehler bei JDownloader-Übergabe</i>"
+                else:
+                    jd_status_text = " | ⚠️ <i>Kein Hoster-Link gefunden</i>"
+
                 results.append({
-                    "text": f"'{show_name}' – Episoden <b>{ep_str}</b> fehlen noch in deiner Bibliothek!<br><small style='color: #8c9ba5;'>Release: {raw_title}</small>",
+                    "text": f"'{show_name}' – Episoden <b>{ep_str}</b> fehlen noch!{jd_status_text}<br><small style='color: #8c9ba5;'>Release: {raw_title}</small>",
                     "class": "missing"
                 })
-                send_pushover("Fehlende Episoden entdeckt!", f"Für '{show_name}' fehlen noch Episoden ({ep_str}) aus dem Release.")
+                send_pushover("Fehlende Episode & Download gestartet!", f"Für '{show_name}' ({ep_str}) wurde der Download an JDownloader übergeben.")
 
     if missing_found == 0:
         results.append({"text": "✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
@@ -246,7 +322,6 @@ def background_checker():
 
 threading.Thread(target=background_checker, daemon=True).start()
 
-# Erzeugt ein schickes, thematisches SVG-Logo (Glocke + Filmstreifen in Cyan/Blau)
 LOGO_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="112" fill="#0f172a"/>
   <path d="M256 96c-61.85 0-112 50.15-112 112v48.63L106.67 312A32 32 0 00133.33 360h245.34a32 32 0 0026.66-48L368 256.63V208c0-61.85-50.15-112-112-112z" fill="#06b6d4"/>
@@ -395,6 +470,16 @@ HTML_TEMPLATE = """
             box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
         }
 
+        .section-title {
+            font-size: 1rem;
+            color: var(--accent);
+            margin: 1.5rem 0 0.75rem 0;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.25rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
         .btn-group {
             display: flex;
             flex-wrap: wrap;
@@ -420,7 +505,7 @@ HTML_TEMPLATE = """
             background-color: var(--accent);
             color: #0f172a;
             width: 100%;
-            margin-top: 1rem;
+            margin-top: 1.5rem;
         }
         .btn-primary:hover {
             background-color: var(--accent-hover);
@@ -498,7 +583,7 @@ HTML_TEMPLATE = """
         <header>
             <img src="/logo.svg" alt="Logo" class="logo-img">
             <h1>Jellyfin Notifier</h1>
-            <p>Automatisierter Smart-Lücken-Detektor für deine Medienbibliothek</p>
+            <p>Automatisierter Smart-Lücken-Detektor & JDownloader-Brücke</p>
         </header>
 
         <div class="card">
@@ -508,24 +593,15 @@ HTML_TEMPLATE = """
             
             <form method="POST" action="/save">
                 <div class="form-grid">
-                    <div class="form-group">
-                        <label>Jellyfin URL</label>
-                        <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Jellyfin API-Key</label>
-                        <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
-                    </div>
-
+                    <div class="section-title">Jellyfin & RSS</div>
                     <div class="form-grid-2">
                         <div class="form-group">
-                            <label>Pushover App Token</label>
-                            <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+                            <label>Jellyfin URL</label>
+                            <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
                         </div>
                         <div class="form-group">
-                            <label>Pushover User Key</label>
-                            <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+                            <label>Jellyfin API-Key</label>
+                            <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
                         </div>
                     </div>
 
@@ -544,6 +620,34 @@ HTML_TEMPLATE = """
                         </select>
                     </div>
 
+                    <div class="section-title">Benachrichtigungen & Download</div>
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label>Pushover App Token</label>
+                            <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+                        </div>
+                        <div class="form-group">
+                            <label>Pushover User Key</label>
+                            <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+                        </div>
+                    </div>
+
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label>MyJDownloader E-Mail</label>
+                            <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
+                        </div>
+                        <div class="form-group">
+                            <label>MyJDownloader Passwort</label>
+                            <input type="password" name="myjd_password" value="{{ config.myjd_password }}">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>MyJDownloader Gerätename (optional)</label>
+                        <input type="text" name="myjd_device_name" value="{{ config.myjd_device_name }}" placeholder="Leer lassen = nimmt erstes Gerät">
+                    </div>
+
                     <div class="form-group">
                         <label>Prüfintervall (in Stunden)</label>
                         <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
@@ -555,7 +659,7 @@ HTML_TEMPLATE = """
                     <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen</button>
                 </div>
 
-                <button type="submit" name="action" value="save" style="background-color: var(--accent); color: #0f172a; width: 100%; margin-top: 1.5rem; padding: 0.85rem; font-size: 1rem;">Einstellungen speichern</button>
+                <button type="submit" name="action" value="save" class="btn-primary">Einstellungen speichern</button>
             </form>
 
             {% if results %}
@@ -622,10 +726,16 @@ def save():
         "jellyfin_api_key": request.form.get("jellyfin_api_key"),
         "pushover_token": request.form.get("pushover_token"),
         "pushover_user": request.form.get("pushover_user"),
-        "rss_url": request.form.get("rss_url"),
+        "myjd_email": request.form.get("myjd_email"),
+        "myjd_password": request.form.get("myjd_password"),
+        "myjd_device_name": request.form.get("myjd_device_name"),
+        "rss_url": request.get("rss_url") if hasattr(request, 'get') else request.form.get("rss_url"),
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
         "selected_library_id": request.form.get("selected_library_id")
     }
+    # Korrektur für rss_url Abruf
+    new_config["rss_url"] = request.form.get("rss_url")
+    
     save_config(new_config)
     
     action_val = request.form.get("action")
