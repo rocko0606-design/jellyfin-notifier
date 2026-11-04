@@ -17,7 +17,6 @@ DEFAULT_CONFIG = {
     "shows": [
         {
             "name": "Breaking Bad", 
-            "path": "D:/Serien/Breaking Bad", 
             "source_url": "https://api.tvmaze.com/search/shows?q=Breaking+Bad"
         }
     ]
@@ -54,23 +53,60 @@ def send_pushover(title, message):
         print(f"Pushover-Fehler: {e}")
         return False
 
+def get_jellyfin_episodes(jellyfin_url, api_key, show_name):
+    """Durchsucht die Jellyfin-Bibliothek über die API nach vorhandenen Episoden einer Serie"""
+    if not jellyfin_url or not api_key:
+        return set()
+    
+    headers = {"X-Embi-Token": api_key}
+    try:
+        # 1. Nach der Serie in Jellyfin suchen
+        search_url = f"{jellyfin_url.rstrip('/')}/Items?searchTerm={requests.utils.quote(show_name)}&includeItemTypes=Series&recursive=true"
+        res = requests.get(search_url, headers=headers, timeout=5).json()
+        items = res.get("Items", [])
+        
+        if not items:
+            return set()
+            
+        series_id = items[0]["Id"]
+        
+        # 2. Alle Episoden dieser Serie aus Jellyfin abrufen
+        ep_url = f"{jellyfin_url.rstrip('/')}/Shows/{series_id}/Episodes"
+        ep_res = requests.get(ep_url, headers=headers, timeout=5).json()
+        episodes = ep_res.get("Items", [])
+        
+        # 3. Ein Set von vorhandenen Staffeln/Folgen erstellen (z.B. "S01E05")
+        existing_eps = set()
+        for ep in episodes:
+            season = ep.get("ParentIndexNumber", 0)
+            number = ep.get("IndexNumber", 0)
+            if season is not None and number is not None:
+                existing_eps.add(f"S{season:02d}E{number:02d}")
+                
+        return existing_eps
+    except Exception as e:
+        print(f"Fehler bei Jellyfin-Abfrage für {show_name}: {e}")
+        return set()
+
 def background_checker():
-    """Hintergrund-Dienst zum Prüfen der Serien"""
+    """Hintergrund-Dienst zum Abgleich zwischen TVMaze und Jellyfin"""
     while True:
         config = load_config()
         interval_hours = float(config.get("check_interval_hours", 6))
-        print("Starte automatischen Serien-Abgleich im Hintergrund...")
+        jellyfin_url = config.get("jellyfin_url")
+        api_key = config.get("jellyfin_api_key")
+        
+        print("Starte automatischen Serien-Abgleich über Jellyfin-API...")
         
         for show in config.get("shows", []):
             name = show.get("name")
-            path = show.get("path")
             source_url = show.get("source_url")
             
             if not source_url:
                 continue
                 
             try:
-                # 1. Online-Daten über TVMaze API abrufen
+                # 1. Neueste Online-Episode über TVMaze abrufen
                 res = requests.get(source_url, timeout=5).json()
                 if res:
                     show_id = res[0]["show"]["id"]
@@ -80,24 +116,17 @@ def background_checker():
                     if latest_ep:
                         season = latest_ep['season']
                         number = latest_ep['number']
-                        ep_code = f"S{season:02d}E{number:02d}" # z.B. S01E05
+                        ep_code = f"S{season:02d}E{number:02d}"
                         
-                        # 2. Lokales Verzeichnis auf der Festplatte prüfen
-                        found_locally = False
-                        if path and os.path.exists(path):
-                            # Durchsuche das angegebene Verzeichnis nach der Episoden-Kennung
-                            for root, dirs, files in os.walk(path):
-                                for file in files:
-                                    if ep_code.lower() in file.lower() or f"{season}x{number}" in file.lower():
-                                        found_locally = True
-                                        break
+                        # 2. Vorhandene Episoden direkt aus Jellyfin auslesen
+                        existing_eps = get_jellyfin_episodes(jellyfin_url, api_key, name)
+                        found_in_jellyfin = ep_code in existing_eps
                         
-                        print(f"Geprüft: {name} -> Neueste Online: {ep_code} | Lokal vorhanden: {found_locally}")
+                        print(f"Geprüft: {name} -> Neueste Online: {ep_code} | In Jellyfin vorhanden: {found_in_jellyfin}")
                         
-                        # 3. Wenn online neu, aber lokal noch nicht da -> Pushover senden!
-                        if not found_locally:
-                            # Hier könntest du prüfen, ob du diese Episode schon gemeldet hast
-                            pass
+                        # 3. Wenn online da, aber in Jellyfin noch fehlt -> Benachrichtigung senden
+                        if not found_in_jellyfin and existing_eps:
+                            send_pushover("Neue Serienfolge!", f"{name} – {ep_code} ist erschienen und fehlt noch in Jellyfin!")
                             
             except Exception as e:
                 print(f"Fehler bei Prüfung von {name}: {e}")
@@ -136,7 +165,7 @@ HTML_TEMPLATE = """
         
         <form method="POST" action="/save">
             <h3>Allgemeine Einstellungen</h3>
-            <label>Jellyfin URL</label>
+            <label>Jellyfin URL (z.B. http://192.168.1.50:8096)</label>
             <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
 
             <label>Jellyfin API-Key</label>
@@ -153,15 +182,13 @@ HTML_TEMPLATE = """
             <label style="margin-top: 1.5rem;">Prüfintervall (in Stunden)</label>
             <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
 
-            <h3 style="margin-top: 2rem;">Zu überwachende Serien & Pfade</h3>
+            <h3 style="margin-top: 2rem;">Zu überwachende Serien</h3>
             <div id="shows-container">
                 {% for show in config.shows %}
                 <div class="show-box">
-                    <label>Serienname:</label>
+                    <label>Serienname (wie in Jellyfin & TVMaze):</label>
                     <input type="text" name="show_name" value="{{ show.name }}" required>
-                    <label>Festplatten-Pfad (Verzeichnis der Serie):</label>
-                    <input type="text" name="show_path" value="{{ show.path }}">
-                    <label>Webseite / API URL (Abgleich):</label>
+                    <label>Webseite / API URL (Abgleich, z.B. TVMaze Suche):</label>
                     <input type="text" name="show_source" value="{{ show.source_url }}">
                     <button type="button" class="btn-danger" onclick="this.parentElement.remove()">Serie entfernen</button>
                 </div>
@@ -179,11 +206,9 @@ HTML_TEMPLATE = """
         const div = document.createElement('div');
         div.className = 'show-box';
         div.innerHTML = `
-            <label>Serienname:</label>
+            <label>Serienname (wie in Jellyfin & TVMaze):</label>
             <input type="text" name="show_name" required>
-            <label>Festplatten-Pfad (Verzeichnis der Serie):</label>
-            <input type="text" name="show_path">
-            <label>Webseite / API URL (Abgleich):</label>
+            <label>Webseite / API URL (Abgleich, z.B. TVMaze Suche):</label>
             <input type="text" name="show_source">
             <button type="button" class="btn-danger" onclick="this.parentElement.remove()">Serie entfernen</button>
         `;
@@ -213,16 +238,13 @@ def index():
 def save():
     action = request.form.get("action")
     
-    # Formulardaten immer erst zwischenspeichern
     names = request.form.getlist("show_name")
-    paths = request.form.getlist("show_path")
     sources = request.form.getlist("show_source")
     
     shows = []
     for i in range(len(names)):
         shows.append({
             "name": names[i],
-            "path": paths[i],
             "source_url": sources[i]
         })
         
