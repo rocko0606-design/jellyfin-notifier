@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Sucht auf der Serien-Detailseite nach dem korrekten Release-Link und holt den SLUG"""
+    """Liest den Hoster-Link über die Detailseite und die API aus (unter Verwendung des Cookies)"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -136,11 +136,14 @@ def extract_hoster_link(release_page_url):
             specific_link = None
             all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
             for link in all_links:
-                if target_release_id and target_release_id in link:
+                if target_release_id and target_release_id in link and "login" not in link:
                     specific_link = link
                     break
-                elif "/out/" in link or "release=" in link:
+                elif ("/out/" in link or "/go/" in link) and "login" not in link:
                     specific_link = link
+
+            if not specific_link and target_release_id:
+                specific_link = f"/out/{target_release_id}"
 
             if specific_link:
                 if specific_link.startswith('/'):
@@ -148,10 +151,16 @@ def extract_hoster_link(release_page_url):
                 else:
                     target_out_url = specific_link
                 
-                print(f"Rufe Zwischenseite auf: {target_out_url}")
+                print(f"Rufe Zielseite auf: {target_out_url}")
                 sub_res = requests.get(target_out_url, headers=headers, timeout=10)
+                
                 if sub_res.status_code == 200:
                     sub_html = sub_res.text
+                    
+                    if "/login" in sub_res.url:
+                        print("⚠️ Zugriff verweigert / Weiterleitung zum Login. Bitte prüfe dein Webseiten-Cookie in den Einstellungen.")
+                        return None
+
                     slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', sub_html)
                     ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', sub_html)
                     
@@ -804,7 +813,7 @@ def save():
         "jellyfin_url": request.form.get("jellyfin_url"),
         "jellyfin_api_key": request.form.get("jellyfin_api_key"),
         "pushover_token": request.form.get("pushover_token"),
-        "pushover_user": request.form.get("pushover_user"),
+        "pushover_user": request.main if "pushover_user" in request.form else request.form.get("pushover_user"),
         "myjd_email": request.form.get("myjd_email"),
         "myjd_password": request.form.get("myjd_password"),
         "myjd_device_name": request.form.get("myjd_device_name"),
@@ -813,6 +822,9 @@ def save():
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
         "selected_library_id": request.form.get("selected_library_id")
     }
+    # Korrektur für pushover_user im save-Dictionary:
+    new_config["pushover_user"] = request.form.get("pushover_user")
+    
     save_config(new_config)
     
     action_val = request.form.get("action")
