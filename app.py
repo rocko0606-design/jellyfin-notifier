@@ -88,7 +88,6 @@ def get_library_series_with_ids(jellyfin_url, api_key, library_id):
     return []
 
 def get_existing_episodes(jellyfin_url, api_key, series_id):
-    """Holt alle bereits in Jellyfin vorhandenen Episoden einer Serie (z.B. {'S01E01', 'S03E05'})"""
     headers = {
         "X-Emby-Token": api_key,
         "Authorization": f'MediaBrowser Token="{api_key}"'
@@ -110,24 +109,32 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def clean_feed_title(raw_title):
-    """Liest den Serientitel und die exakte Episodenkennung (z.B. S01E06) aus dem Feed"""
+    """Extrahiert den sauberen Serientitel und die Episodenkennung absolut fehlersicher"""
+    # 1. Wenn ein Gedankenstrich da ist, nimm den Teil links davon
     if "—" in raw_title:
-        clean_prefix = raw_title.split("—")[0].strip()
+        base_text = raw_title.split("—")[0].strip()
     else:
-        clean_prefix = raw_title
+        base_text = raw_title
 
-    normalized = clean_prefix.replace('.', ' ').replace('_', ' ')
-    
+    # 2. SxxExx oder NxNN Kennung finden
     match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
     match_x = re.search(r'(\d+)x(\d+)', raw_title)
     
     ep_code = None
     if match_s:
         ep_code = f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}"
+        # Schneide alles ab SxxExx ab, falls kein Gedankenstrich vorhanden war
+        if "—" not in raw_title:
+            base_text = raw_title[:match_s.start()]
     elif match_x:
         ep_code = f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}"
+        if "—" not in raw_title:
+            base_text = raw_title[:match_x.start()]
 
-    clean_name = re.sub(r'\s+', ' ', normalized).strip()
+    # 3. Alle Punkte und Unterstriche konsequent in Leerzeichen umwandeln
+    clean_name = base_text.replace('.', ' ').replace('_', ' ')
+    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+    
     return clean_name, ep_code
 
 def perform_check():
@@ -147,7 +154,6 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
-    # Erstelle ein Dictionary für alle lokalen Serien (normalisiert in Kleinbuchstaben)
     shows_dict = {show["name"].lower().strip(): show for show in local_shows}
 
     feed_items = []
@@ -182,8 +188,8 @@ def perform_check():
             
         feed_lower = feed_show_name.lower().strip()
         
-        # Universelle Normalisierung für englisch/deutsch abweichende Schreibweisen (z.B. NCIS vs Navy CIS)
-        if feed_lower in ["ncis origins", "ncis: origins"]:
+        # Zuverlässiges Mapping für abweichende Schreibweisen zwischen Feed und Jellyfin
+        if "ncis origins" in feed_lower or "ncis: origins" in feed_lower:
             feed_lower = "navy cis: origins"
         elif feed_lower == "ncis":
             feed_lower = "navy cis"
@@ -200,10 +206,8 @@ def perform_check():
             show_name = matched_show["name"]
             series_id = matched_show["id"]
             
-            # Hole exakt die Liste aller bereits vorhandenen Episoden dieser Serie aus Jellyfin
             existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
             
-            # ENTSCHEIDENDER LÜCKEN-CHECK: Ist genau diese Episode noch NICHT in Jellyfin?
             if ep_code not in existing_eps:
                 missing_found += 1
                 results.append({
@@ -213,7 +217,7 @@ def perform_check():
                 send_pushover("Fehlende Episode entdeckt!", f"Für '{show_name}' ist {ep_code} online, die dir in Jellyfin noch fehlt.")
 
     if missing_found == 0:
-        results.append({"text": f"✅ Alle Feed-Einträge geprüft – Deine 120 Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
+        results.append({"text": f"✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
         
     return results
 
