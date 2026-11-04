@@ -69,7 +69,6 @@ def get_jellyfin_libraries(jellyfin_url, api_key):
     return []
 
 def get_library_series_with_ids(jellyfin_url, api_key, library_id):
-    """Holt alle Serien und deren IDs aus der ausgewählten Bibliothek"""
     if not jellyfin_url or not api_key or not library_id:
         return []
     
@@ -88,7 +87,6 @@ def get_library_series_with_ids(jellyfin_url, api_key, library_id):
     return []
 
 def get_existing_episodes(jellyfin_url, api_key, series_id):
-    """Holt alle bereits in Jellyfin vorhandenen Episoden einer spezifischen Serie"""
     headers = {
         "X-Emby-Token": api_key,
         "Authorization": f'MediaBrowser Token="{api_key}"'
@@ -109,19 +107,29 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
         print(f"Fehler beim Abrufen der Episoden für ID {series_id}: {e}")
     return set()
 
-def extract_season_episode(title):
-    """Versucht aus einem Release-Titel die Staffel und Episode zu extrahieren (z.B. S01E05 oder 1x05)"""
-    # Sucht nach Muster wie S01E05 oder s1e5
-    match = re.search(r's(\d+)\s*e(\d+)', title, re.IGNORECASE)
-    if match:
-        return f"S{int(match.group(1)):02d}E{int(match.group(2)):02d}"
+def clean_feed_title(raw_title):
+    """Wandelt Release-Formate wie 'Small.Prophets.S01E06.German...' in saubere Namen und Episoden um"""
+    # 1. Staffel & Episode extrahieren (z.B. S01E06 oder 1x06)
+    ep_code = None
+    match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
+    match_x = re.search(r'(\d+)x(\d+)', raw_title)
     
-    # Sucht nach Muster wie 1x05
-    match_alt = re.search(r'(\d+)x(\d+)', title)
-    if match_alt:
-        return f"S{int(match_alt.group(1)):02d}E{int(match_alt.group(2)):02d}"
-        
-    return None
+    if match_s:
+        ep_code = f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}"
+        # Alles vor S01E... abschneiden, um den Seriennamen zu erhalten
+        raw_name = raw_title[:match_s.start()]
+    elif match_x:
+        ep_code = f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}"
+        raw_name = raw_title[:match_x.start()]
+    else:
+        raw_name = raw_title
+
+    # 2. Punkte, Unterstriche etc. durch Leerzeichen ersetzen und säubern
+    clean_name = raw_name.replace('.', ' ').replace('_', ' ').strip()
+    # Eventuell doppelte Leerzeichen entfernen
+    clean_name = re.sub(r'\s+', ' ', clean_name)
+    
+    return clean_name, ep_code
 
 def perform_check():
     config = load_config()
@@ -130,7 +138,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte präzisen RSS-Feed Abgleich mit Jellyfin...")
+    print("Starte optimierten RSS-Feed Abgleich...")
     results = []
     
     if not library_id:
@@ -139,6 +147,9 @@ def perform_check():
     local_shows = get_library_series_with_ids(jellyfin_url, api_key, library_id)
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
+
+    # Erstelle ein Dictionary zum schnellen Abgleich (Kleinbuchstaben als Schlüssel)
+    shows_dict = {show["name"].lower(): show for show in local_shows}
 
     feed_items = []
     try:
@@ -156,29 +167,39 @@ def perform_check():
         return [{"text": f"❌ Konnte RSS-Feed nicht verarbeiten: {e}", "class": "warning"}]
 
     missing_found = 0
-    for show in local_shows:
-        show_name = show["name"]
-        series_id = show["id"]
+    for raw_title in feed_items:
+        feed_show_name, ep_code = clean_feed_title(raw_title)
         
-        # Durchsuche den Feed nach passenden Einträgen für diese Serie
-        for title in feed_items:
-            if show_name.lower() in title.lower():
-                ep_code = extract_season_episode(title)
-                if ep_code:
-                    # Prüfe, welche Episoden bereits in Jellyfin existieren
-                    existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
-                    
-                    # Wenn die spezifische Episode noch NICHT in Jellyfin ist -> Alarm!
-                    if ep_code not in existing_eps:
-                        missing_found += 1
-                        results.append({
-                            "text": f"🔔 '{show_name}' – {ep_code} ist im Feed erschienen und <b>fehlt noch</b> in Jellyfin! (Release: {title})",
-                            "class": "missing"
-                        })
-                        send_pushover("Neue Episode fehlt in Jellyfin!", f"'{show_name}' ({ep_code}) ist online und fehlt noch in der Bibliothek.")
+        if not ep_code or not feed_show_name:
+            continue
+            
+        # Prüfen, ob der bereinigte Feed-Name zu einer Serie in Jellyfin passt
+        matched_show = None
+        feed_lower = feed_show_name.lower().strip()
+        
+        for local_name_lower, show_info in shows_dict.items():
+            if local_name_lower == feed_lower or local_name_lower in feed_lower:
+                matched_show = show_info
+                break
+                
+        if matched_show:
+            show_name = matched_show["name"]
+            series_id = matched_show["id"]
+            
+            # Vorhandene Episoden aus Jellyfin holen
+            existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
+            
+            # Wenn die Episode noch fehlt -> Alarm!
+            if ep_code not in existing_eps:
+                missing_found += 1
+                results.append({
+                    "text": f"🔔 '{show_name}' – {ep_code} ist im Feed erschienen und <b>fehlt noch</b> in Jellyfin! (Release: {raw_title})",
+                    "class": "missing"
+                })
+                send_pushover("Neue Episode fehlt in Jellyfin!", f"'{show_name}' ({ep_code}) ist online und fehlt noch in der Bibliothek.")
 
     if missing_found == 0:
-        results.append({"text": f"✅ Alle Serien geprüft – Keine fehlenden Episoden im Feed entdeckt. Alles aktuell!", "class": "success"})
+        results.append({"text": f"✅ Feed-Scan beendet – Keine fehlenden Episoden für deine Jellyfin-Serien im Feed entdeckt.", "class": "success"})
         
     return results
 
@@ -196,7 +217,7 @@ HTML_TEMPLATE = """
 <html lang="de">
 <head>
     <meta charset="utf-8">
-    <title>Jellyfin Notifier – Präziser Abgleich</title>
+    <title>Jellyfin Notifier – Smart Release Abgleich</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 2rem; max-width: 800px; margin: auto; }
         .card { background: #1e1e1e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 1.5rem; }
@@ -216,7 +237,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="card">
-        <h2>Jellyfin Notifier – Präziser Episoden-Abgleich</h2>
+        <h2>Jellyfin Notifier – Smart Release Abgleich</h2>
         {% if msg %}
             <div class="success">{{ msg }}</div>
         {% endif %}
@@ -292,7 +313,7 @@ def index():
 
 @app.route("/save", methods=["POST"])
 def save():
-    action = request.form.get("action")
+    action = request.form.group if hasattr(request.form, 'group') else None
     
     new_config = {
         "jellyfin_url": request.form.get("jellyfin_url"),
@@ -305,12 +326,13 @@ def save():
     }
     save_config(new_config)
     
-    if action == "test":
+    action_val = request.form.get("action")
+    if action_val == "test":
         ok = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Jellyfin Notifier!")
         status = "test_success" if ok else "test_failed"
         return redirect(url_for("index", status=status))
         
-    elif action == "run_check":
+    elif action_val == "run_check":
         results = perform_check()
         app.config["LAST_RESULTS"] = results
         return redirect(url_for("index"))
