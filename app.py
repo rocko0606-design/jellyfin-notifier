@@ -124,4 +124,172 @@ def perform_check():
                     else:
                         status_text = f"🔔 '{name}': Neueste Folge ({ep_code}) ist online erschienen, fehlt aber noch in Jellyfin!"
                         type_class = "missing"
-                        send_pushover("Neue Serienfolge!", f"{name} – {ep_code} ist erschienen und fehlt noch
+                        send_pushover("Neue Serienfolge!", f"{name} – {ep_code} ist erschienen und fehlt noch in Jellyfin!")
+                        
+                    results.append({"text": status_text, "class": type_class})
+        except Exception as e:
+            err_msg = f"❌ Fehler bei Prüfung von {name}: {e}"
+            print(err_msg)
+            results.append({"text": err_msg, "class": "warning"})
+            
+    return results
+
+def background_checker():
+    while True:
+        config = load_config()
+        interval_hours = float(config.get("check_interval_hours", 6))
+        perform_check()
+        time.sleep(interval_hours * 3600)
+
+threading.Thread(target=background_checker, daemon=True).start()
+
+HTML_TEMPLATE = """
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <title>Jellyfin Notifier</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 2rem; max-width: 800px; margin: auto; }
+        .card { background: #1e1e1e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 1.5rem; }
+        label { display: block; margin-top: 1rem; font-weight: bold; color: #b0bec5; }
+        input { width: 100%; padding: 0.5rem; margin-top: 0.3rem; background: #2c2c2c; border: 1px solid #444; color: #fff; border-radius: 4px; box-sizing: border-box; }
+        button { background: #00bcd4; color: #000; border: none; padding: 0.75rem 1.5rem; margin-top: 1rem; font-weight: bold; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #26c6da; }
+        .btn-test { background: #ff9800; color: #000; margin-right: 0.5rem; }
+        .btn-check { background: #4caf50; color: #fff; margin-right: 0.5rem; }
+        .btn-danger { background: #e53935; color: #fff; padding: 0.4rem 0.8rem; margin-top: 0.5rem; }
+        .show-box { background: #252525; padding: 1rem; border-radius: 6px; margin-top: 1rem; border-left: 4px solid #00bcd4; }
+        .success { background: #1b5e20; color: #a5d6a7; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
+        .missing { background: #e65100; color: #ffe0b2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: bold; }
+        .warning { background: #b71c1c; color: #ffcdd2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
+        .status-box { margin-top: 1.5rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Jellyfin Notifier – Weboberfläche</h2>
+        {% if msg %}
+            <div class="success">{{ msg }}</div>
+        {% endif %}
+        
+        <form method="POST" action="/save">
+            <h3>Allgemeine Einstellungen</h3>
+            <label>Jellyfin URL (z.B. http://192.168.1.50:8096)</label>
+            <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
+
+            <label>Jellyfin API-Key</label>
+            <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
+
+            <label>Pushover App Token</label>
+            <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+
+            <label>Pushover User Key</label>
+            <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+
+            <div style="margin-top: 1.5rem;">
+                <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht senden</button>
+                <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen (Manuell)</button>
+            </div>
+
+            <label style="margin-top: 1.5rem;">Prüfintervall (in Stunden)</label>
+            <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
+
+            <h3 style="margin-top: 2rem;">Zu überwachende Serien</h3>
+            <div id="shows-container">
+                {% for show in config.shows %}
+                <div class="show-box">
+                    <label>Serienname (wie in Jellyfin & TVMaze):</label>
+                    <input type="text" name="show_name" value="{{ show.name }}" required>
+                    <label>Webseite / API URL (Abgleich, z.B. TVMaze Suche):</label>
+                    <input type="text" name="show_source" value="{{ show.source_url }}">
+                    <button type="button" class="btn-danger" onclick="this.parentElement.remove()">Serie entfernen</button>
+                </div>
+                {% endfor %}
+            </div>
+
+            <button type="button" onclick="addShow()" style="background: #2196f3; color: #fff; margin-top: 1rem;">+ Weitere Serie hinzufügen</button>
+            <br>
+            <button type="submit" name="action" value="save" style="width: 100%; font-size: 1.1rem; margin-top: 2rem; background: #00bcd4;">Einstellungen speichern</button>
+        </form>
+
+        {% if results %}
+            <div class="status-box">
+                <h3>Ergebnis des Abgleichs:</h3>
+                {% for r in results %}
+                    <div class="{{ r.class }}">{{ r.text }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+    <script>
+    function addShow() {
+        const container = document.getElementById('shows-container');
+        const div = document.createElement('div');
+        div.className = 'show-box';
+        div.innerHTML = `
+            <label>Serienname (wie in Jellyfin & TVMaze):</label>
+            <input type="text" name="show_name" required>
+            <label>Webseite / API URL (Abgleich, z.B. TVMaze Suche):</label>
+            <input type="text" name="show_source">
+            <button type="button" class="btn-danger" onclick="this.parentElement.remove()">Serie entfernen</button>
+        `;
+        container.appendChild(div);
+    }
+    </script>
+</body>
+</html>
+"""
+
+@app.route("/", methods=["GET"])
+def index():
+    config = load_config()
+    status = request.args.get("status")
+    msg = None
+    if status == "saved":
+        msg = "Einstellungen erfolgreich gespeichert!"
+    elif status == "test_success":
+        msg = "Test-Nachricht wurde erfolgreich via Pushover gesendet!"
+    elif status == "test_failed":
+        msg = "Fehler beim Senden! Bitte Token und User Key überprüfen."
+    
+    return render_template_string(HTML_TEMPLATE, config=config, msg=msg, results=app.config.get("LAST_RESULTS"))
+
+@app.route("/save", methods=["POST"])
+def save():
+    action = request.form.get("action")
+    
+    names = request.form.getlist("show_name")
+    sources = request.form.getlist("show_source")
+    
+    shows = []
+    for i in range(len(names)):
+        shows.append({
+            "name": names[i],
+            "source_url": sources[i]
+        })
+        
+    new_config = {
+        "jellyfin_url": request.form.get("jellyfin_url"),
+        "jellyfin_api_key": request.form.get("jellyfin_api_key"),
+        "pushover_token": request.form.get("pushover_token"),
+        "pushover_user": request.form.get("pushover_user"),
+        "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
+        "shows": shows
+    }
+    save_config(new_config)
+    
+    if action == "test":
+        ok = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Jellyfin Notifier!")
+        status = "test_success" if ok else "test_failed"
+        return redirect(url_for("index", status=status))
+        
+    elif action == "run_check":
+        results = perform_check()
+        app.config["LAST_RESULTS"] = results
+        return redirect(url_for("index"))
+        
+    return redirect(url_for("index", status="saved"))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
