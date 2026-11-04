@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Liest den Hoster-Link über die Detailseite und die API aus (unter Verwendung des Cookies)"""
+    """Extrahiert den SLUG direkt von der im Feed angegebenen URL"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -124,62 +124,57 @@ def extract_hoster_link(release_page_url):
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        release_id_match = re.search(r'release=(\d+)', release_page_url)
-        target_release_id = release_id_match.group(1) if release_id_match else None
-
-        print(f"Lade Serien-Detailseite: {release_page_url}")
+        print(f"Lade Release-Link: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
         
         if res.status_code == 200:
             html = res.text
             
-            specific_link = None
-            all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
-            for link in all_links:
-                if target_release_id and target_release_id in link and "login" not in link and "register" not in link:
-                    specific_link = link
-                    break
-                elif ("/out/" in link or "/go/" in link) and "login" not in link and "register" not in link:
-                    specific_link = link
-
-            if not specific_link and target_release_id:
-                specific_link = f"/out/{target_release_id}"
-
-            if specific_link:
-                if specific_link.startswith('/'):
-                    target_out_url = f"https://nox.to{specific_link}"
-                else:
-                    target_out_url = specific_link
+            slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
+            ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
+            
+            if slug_match:
+                slug = slug_match.group(1)
+                ap_token = ap_match.group(1) if ap_match else ""
                 
-                print(f"Rufe Zielseite auf: {target_out_url}")
-                sub_res = requests.get(target_out_url, headers=headers, timeout=10)
-                
-                if sub_res.status_code == 200:
-                    sub_html = sub_res.text
+                api_url = f"https://nox.to/go/{slug}/url"
+                if ap_token:
+                    api_url += f"?ap={ap_token}"
                     
-                    if "/login" in sub_res.url or "/register" in sub_res.url:
-                        print("⚠️ Zugriff verweigert / Weiterleitung zum Login/Register. Bitte trage ein gültiges Session-Cookie in den Einstellungen ein.")
-                        return None
-
-                    slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', sub_html)
-                    ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', sub_html)
-                    
-                    if slug_match:
-                        slug = slug_match.group(1)
-                        ap_token = ap_match.group(1) if ap_match else ""
-                        
-                        api_url = f"https://nox.to/go/{slug}/url"
-                        if ap_token:
-                            api_url += f"?ap={ap_token}"
-                            
-                        print(f"Frage Download-API ab: {api_url}")
-                        api_res = requests.get(api_url, headers=headers, timeout=10)
-                        if api_res.status_code == 200:
-                            data = api_res.json()
-                            target_url = data.get("url")
-                            if target_url:
-                                print(f"Echter Hoster-Link erhalten: {target_url}")
-                                return target_url
+                print(f"Frage Download-API ab: {api_url}")
+                api_res = requests.get(api_url, headers=headers, timeout=10)
+                if api_res.status_code == 200:
+                    data = api_res.json()
+                    target_url = data.get("url")
+                    if target_url:
+                        print(f"Echter Hoster-Link erhalten: {target_url}")
+                        return target_url
+            else:
+                release_id_match = re.search(r'release=(\d+)', release_page_url)
+                if release_id_match:
+                    target_release_id = release_id_match.group(1)
+                    all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
+                    for link in all_links:
+                        if target_release_id in link and "login" not in link and "register" not in link:
+                            sub_url = f"https://nox.to{link}" if link.startswith('/') else link
+                            print(f"Folge Release-Unterlink: {sub_url}")
+                            sub_res = requests.get(sub_url, headers=headers, timeout=10)
+                            if sub_res.status_code == 200:
+                                sub_html = sub_res.text
+                                s_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', sub_html)
+                                a_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', sub_html)
+                                if s_match:
+                                    s_val = s_match.group(1)
+                                    a_val = a_match.group(1) if a_match else ""
+                                    a_url = f"https://nox.to/go/{s_val}/url"
+                                    if a_val:
+                                        a_url += f"?ap={a_val}"
+                                    api_res2 = requests.get(a_url, headers=headers, timeout=10)
+                                    if api_res2.status_code == 200:
+                                        t_url = api_res2.json().get("url")
+                                        if t_url:
+                                            print(f"Echter Hoster-Link erhalten: {t_url}")
+                                            return t_url
 
         filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
         if filer_match:
@@ -390,7 +385,7 @@ def perform_check():
                 send_pushover("Fehlende Episode & Download gestartet!", f"Für '{show_name}' ({ep_str}) wurde der Download an JDownloader übergeben.")
 
     if missing_found == 0:
-        results.append({"text": "✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
+        results.append({"text": "✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine новых Lücken gefunden.", "class": "success"})
         
     return results
 
