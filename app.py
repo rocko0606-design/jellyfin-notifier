@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Extrahiert die Release-ID und leitet den Download-Link direkt ab"""
+    """Extrahiert den echten Hoster-Link über die Release-Detailseite"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -118,29 +118,45 @@ def extract_hoster_link(release_page_url):
         cookie_val = config.get("website_cookie", "")
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://nox.to/"
         }
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        release_match = re.search(r'release=(\d+)', release_page_url)
-        if release_match:
-            release_id = release_match.group(1)
-            out_url = f"https://nox.to/out/{release_id}"
-            print(f"Versuche direkten Redirect-Aufruf: {out_url}")
-            
-            res = requests.get(out_url, headers=headers, allow_redirects=True, timeout=10)
-            final_url = res.url
-            print(f"Final erreichter Link: {final_url}")
-            
-            if "filer.net" in final_url.lower() or "rapidgator" in final_url.lower():
-                return final_url
-
+        print(f"Lade Release-Detailseite: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
+        
         if res.status_code == 200:
-            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
+            html = res.text
+            
+            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', html, re.IGNORECASE)
             if filer_match:
-                return filer_match.group(0).rstrip('"\'')
+                found_url = filer_match.group(0).rstrip('"\'')
+                print(filer_match.group(0))
+                return found_url
+
+            urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
+            for u in urls:
+                if any(skip in u.lower() for skip in ["google", "cloudflare", "facebook", "twitter", "css", "js", "img", "anonym.to"]):
+                    continue
+                
+                try:
+                    time.sleep(0.3)
+                    sub_res = requests.get(u, headers=headers, timeout=5)
+                    if sub_res.status_code == 200:
+                        sub_filer = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', sub_res.text, re.IGNORECASE)
+                        if sub_filer:
+                            found_url = sub_filer.group(0).rstrip('"\'')
+                            print(sub_filer.group(0))
+                            return found_url
+                            
+                        sub_urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', sub_res.text)
+                        for su in sub_urls:
+                            if "filer.net" in su.lower():
+                                return su
+                except:
+                    continue
 
     except Exception as e:
         print(f"Fehler beim Extrahieren des Hoster-Links: {e}")
