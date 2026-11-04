@@ -83,7 +83,7 @@ def send_to_jdownloader(url, package_name):
             "link": url,
             "packageName": package_name
         }])
-        print(Link an JDownloader übergeben: {url})
+        print(f"Link an JDownloader übergeben: {url}")
         return True
     except Exception as e:
         print(f"MyJDownloader Fehler: {e}")
@@ -98,10 +98,8 @@ def extract_hoster_link(release_page_url):
         res = requests.get(release_page_url, headers=headers, timeout=10)
         if res.status_code == 200:
             html = res.text
-            # Suche nach allen HTTP(S) Links im HTML
             urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
             for u in urls:
-                # Filtert gängige Hoster heraus
                 if any(hoster in u.lower() for hoster in ["filer.net", "rapidgator", "1fichier", "nitroflare"]):
                     return u
     except Exception as e:
@@ -290,7 +288,6 @@ def perform_check():
                 missing_found += 1
                 ep_str = ", ".join(missing_in_release)
                 
-                # Hoster-Link ermitteln und an JDownloader übergeben
                 jd_status_text = ""
                 hoster_url = extract_hoster_link(item_link)
                 if hoster_url:
@@ -729,13 +726,10 @@ def save():
         "myjd_email": request.form.get("myjd_email"),
         "myjd_password": request.form.get("myjd_password"),
         "myjd_device_name": request.form.get("myjd_device_name"),
-        "rss_url": request.get("rss_url") if hasattr(request, 'get') else request.form.get("rss_url"),
+        "rss_url": request.form.get("rss_url"),
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
         "selected_library_id": request.form.get("selected_library_id")
     }
-    # Korrektur für rss_url Abruf
-    new_config["rss_url"] = request.form.get("rss_url")
-    
     save_config(new_config)
     
     action_val = request.form.get("action")
