@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Holt sich den SLUG und AP-Token direkt über die Release-ID und nutzt das Cloudflare-Cookie"""
+    """Nutzt die exakte RSS-Feed-URL, um den SLUG und AP-Token auszulesen"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -127,33 +127,32 @@ def extract_hoster_link(release_page_url):
             else:
                 headers["Cookie"] = f"cf_clearance={cookie_val}"
 
-        release_id_match = re.search(r'release=(\d+)', release_page_url)
-        if not release_id_match:
-            return None
-            
-        release_id = release_id_match.group(1)
+        print(f"Lade Feed-Link direkt: {release_page_url}")
+        res = requests.get(release_page_url, headers=headers, timeout=10)
+        print(f"Feed-Link Status: {res.status_code}, Länge: {len(res.text)}")
         
-        outbound_url = f"https://nox.to/out/{release_id}"
-        print(f"Versuche direkten Outbound-Pfad mit Cookie: {outbound_url}")
-        
-        res = requests.get(outbound_url, headers=headers, timeout=10)
-        print(f"Outbound Status: {res.status_code}, Länge: {len(res.text)}")
-        
-        if res.status_code != 200 or "const SLUG" not in res.text:
-            print(f"Lade Hauptseite zur Link-Suche: {release_page_url}")
-            main_res = requests.get(release_page_url, headers=headers, timeout=10)
-            if main_res.status_code == 200:
-                all_links = re.findall(r'href=["\']([^"\']+)["\']', main_res.text)
-                for link in all_links:
-                    if release_id in link and "login" not in link and "register" not in link:
-                        sub_url = f"https://nox.to{link}" if link.startswith('/') else link
-                        print(f"Gefundener Zwischenlink: {sub_url}")
-                        res = requests.get(sub_url, headers=headers, timeout=10)
-                        break
-
         if res.status_code == 200:
             html = res.text
             
+            target_sub_url = None
+            all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
+            for link in all_links:
+                if "/out/" in link or "/go/" in link or "release=" in link:
+                    if "login" not in link and "register" not in link:
+                        target_sub_url = link
+                        break
+
+            if target_sub_url:
+                if target_sub_url.startswith('/'):
+                    sub_url = f"https://nox.to{target_sub_url}"
+                else:
+                    sub_url = target_sub_url
+                
+                print(f"Rufe Unterlink auf: {sub_url}")
+                sub_res = requests.get(sub_url, headers=headers, timeout=10)
+                if sub_res.status_code == 200:
+                    html = sub_res.text
+
             slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
             ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
             
@@ -174,7 +173,7 @@ def extract_hoster_link(release_page_url):
                         print(f"Echter Hoster-Link erhalten: {target_url}")
                         return target_url
             else:
-                print("⚠️ Kein SLUG im Quelltext gefunden. Prüfe, ob das Cookie noch aktiv ist.")
+                print("⚠️ Kein SLUG gefunden. Prüfe das Cookie.")
 
         filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
         if filer_match:
