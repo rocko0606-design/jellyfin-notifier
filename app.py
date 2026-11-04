@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Liest die eingebetteten Vue-Daten (window.route) aus dem Quelltext aus"""
+    """Extrahiert den Hoster-Link über den direkten Regex-Abgleich der Go-Pfad Strukturen"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -133,34 +133,28 @@ def extract_hoster_link(release_page_url):
         if res.status_code == 200:
             html = res.text
             
-            route_match = re.search(r'window\.route\s*=\s*(\{.*?\});?\s*window\.routes', html, re.DOTALL)
-            if route_match:
-                try:
-                    route_json = json.loads(route_match.group(1))
-                    seo_data = route_json.get("data", {}).get("seo", {})
-                    print(f"Gefundene SEO-Daten aus window.route: {seo_data.get('title')}")
-                except Exception as ex:
-                    print(f"Konnte window.route JSON nicht parsen: {ex}")
-
-            go_matches = re.findall(r'(/go/[^\s<>"\']+)', html)
+            # Suche flexibel nach allen /go/ Pfaden im HTML (auch innerhalb von JS-Objekten)
+            go_matches = re.findall(r'(/go/[a-zA-Z0-9_\-\.]+)', html)
             for go_path in go_matches:
-                go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
-                print(f"Gefundener Go-Pfad: {go_url}")
-                
-                api_url = go_url if "/url" in go_url else f"{go_url}/url"
-                api_res = requests.get(api_url, headers=headers, timeout=10)
-                if api_res.status_code == 200:
-                    try:
-                        data = api_res.json()
-                        target_url = data.get("url")
-                        if target_url:
-                            print(f"Echter Hoster-Link erhalten: {target_url}")
-                            return target_url
-                    except:
-                        filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', api_res.text, re.IGNORECASE)
-                        if filer_match:
-                            return filer_match.group(0).rstrip('"\'')
+                if len(go_path) > 10:  # Go-Pfade haben lange Tokens
+                    go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
+                    print(f"Gefundener Go-Pfad: {go_url}")
+                    
+                    api_url = go_url if "/url" in go_url else f"{go_url}/url"
+                    api_res = requests.get(api_url, headers=headers, timeout=10)
+                    if api_res.status_code == 200:
+                        try:
+                            data = api_res.json()
+                            target_url = data.get("url")
+                            if target_url:
+                                print(f"Echter Hoster-Link erhalten: {target_url}")
+                                return target_url
+                        except:
+                            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', api_res.text, re.IGNORECASE)
+                            if filer_match:
+                                return filer_match.group(0).rstrip('"\'')
 
+            # Fallback: Direkt im Quelltext nach filer.net suchen
             filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
             if filer_match:
                 found_filer = filer_match.group(0).rstrip('"\'')
