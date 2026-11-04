@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Extrahiert den Hoster-Link unter Berücksichtigung der Vue.js-Struktur und API-Endpunkte"""
+    """Liest die eingebetteten Vue-Daten (window.route) aus dem Quelltext aus"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -119,8 +119,7 @@ def extract_hoster_link(release_page_url):
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://nox.to/",
-            "Accept": "application/json, text/plain, */*"
+            "Referer": "https://nox.to/"
         }
         if cookie_val:
             if "cf_clearance=" in cookie_val or "=" in cookie_val:
@@ -128,48 +127,25 @@ def extract_hoster_link(release_page_url):
             else:
                 headers["Cookie"] = f"cf_clearance={cookie_val}"
 
-        # Da die Seite die Daten über das Backend/API lädt, versuchen wir den Release-Daten-Endpunkt direkt zu treffen
-        # Die Web-App nutzt intern oft /api/... oder lädt die JSON-Daten der Route
-        release_id_match = re.search(r'release=(\d+)', release_page_url)
-        release_id = release_id_match.group(1) if release_id_match else None
-        
-        if release_id:
-            api_release_url = f"https://nox.to/api/releases/{release_id}"
-            print(f"Versuche Release-API aufzurufen: {api_release_url}")
-            api_res = requests.get(api_release_url, headers=headers, timeout=10)
-            if api_res.status_code == 200:
-                try:
-                    data = api_res.json()
-                    # Prüfen ob ein Go-Link oder direkter Hoster-Link enthalten ist
-                    go_url = data.get("goUrl") or data.get("url") or data.get("link")
-                    if go_url:
-                        if "/go/" in go_url or "/out/" in go_url:
-                            full_go = f"https://nox.to{go_url}" if go_url.startswith('/') else go_url
-                            url_res = requests.get(f"{full_go}/url", headers=headers, timeout=10)
-                            if url_res.status_code == 200:
-                                try:
-                                    target_data = url_res.json()
-                                    if target_data.get("url"):
-                                        print(f"Echter Hoster-Link über API erhalten: {target_data.get('url')}")
-                                        return target_data.get("url")
-                                except:
-                                    pass
-                        elif "filer.net" in go_url:
-                            return go_url
-                except Exception as ex:
-                    print(f"API-JSON-Fehler: {ex}")
-
-        print(f"Lade Release-Seite statisch: {release_page_url}")
+        print(f"Lade Release-Seite: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
         
         if res.status_code == 200:
             html = res.text
             
-            # Suche nach jeglichen /go/ Pfaden im HTML oder Skript-Bereich
+            route_match = re.search(r'window\.route\s*=\s*(\{.*?\});?\s*window\.routes', html, re.DOTALL)
+            if route_match:
+                try:
+                    route_json = json.loads(route_match.group(1))
+                    seo_data = route_json.get("data", {}).get("seo", {})
+                    print(f"Gefundene SEO-Daten aus window.route: {seo_data.get('title')}")
+                except Exception as ex:
+                    print(f"Konnte window.route JSON nicht parsen: {ex}")
+
             go_matches = re.findall(r'(/go/[^\s<>"\']+)', html)
             for go_path in go_matches:
                 go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
-                print(f"Gefundener Go-Pfad im Quelltext: {go_url}")
+                print(f"Gefundener Go-Pfad: {go_url}")
                 
                 api_url = go_url if "/url" in go_url else f"{go_url}/url"
                 api_res = requests.get(api_url, headers=headers, timeout=10)
