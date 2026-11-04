@@ -108,15 +108,28 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
         print(f"Fehler beim Abrufen der Episoden für ID {series_id}: {e}")
     return set()
 
+def normalize_name(name):
+    """Wandelt Serientitel in eine einheitliche Form um (keine Sonderzeichen, einheitliches NCIS->Navy CIS Mapping)"""
+    if not name:
+        return ""
+    n = name.lower().strip()
+    
+    # Bekannte Feed-Abkürzungen sauber auf Jellyfin-Schreibweise mappen
+    if n in ["ncis origins", "ncis: origins"]:
+        n = "navy cis: origins"
+    elif n == "ncis":
+        n = "navy cis"
+        
+    # Entfernt alles außer Buchstaben und Zahlen für einen fehlerfreien exakten Vergleich
+    return re.sub(r'[^a-z0-9]', '', n)
+
 def clean_feed_title(raw_title):
-    """Liest den exakten Release-Namen und extrahiert den sauberen Serientitel sowie SxxExx"""
-    # Wenn ein Gedankenstrich vorhanden ist, nehmen wir den rechten Teil (den echten Release-Namen, z.B. NCIS.Origins.S02E17...)
+    """Extrahiert den sauberen Namen und die Episodenkennung aus dem Feed"""
     if "—" in raw_title:
         release_part = raw_title.split("—")[1].strip()
     else:
         release_part = raw_title
 
-    # Episodenkennung suchen (z.B. S02E17)
     match_s = re.search(r's(\d+)\s*e(\d+)', release_part, re.IGNORECASE)
     match_x = re.search(r'(\d+)x(\d+)', release_part)
     
@@ -130,10 +143,7 @@ def clean_feed_title(raw_title):
     else:
         raw_name = release_part
 
-    # Punkte und Unterstriche in Leerzeichen umwandeln
     clean_name = raw_name.replace('.', ' ').replace('_', ' ').strip()
-    clean_name = re.sub(r'\s+', ' ', clean_name)
-    
     return clean_name, ep_code
 
 def perform_check():
@@ -153,7 +163,11 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
-    shows_dict = {show["name"].lower().strip(): show for show in local_shows}
+    # Erstelle ein Dictionary mit normierten Schlüsseln (z.B. 'navycisorigins', 'smallprophets', etc.)
+    shows_dict = {}
+    for show in local_shows:
+        norm_key = normalize_name(show["name"])
+        shows_dict[norm_key] = show
 
     feed_items = []
     try:
@@ -185,21 +199,10 @@ def perform_check():
         if not ep_code or not feed_show_name:
             continue
             
-        feed_lower = feed_show_name.lower().strip()
+        norm_feed_name = normalize_name(feed_show_name)
         
-        # Gezieltes Mapping für abweichende Schreibweisen zwischen Feed und Jellyfin
-        if "ncis origins" in feed_lower or "ncis: origins" in feed_lower:
-            feed_lower = "navy cis: origins"
-        elif feed_lower == "ncis":
-            feed_lower = "navy cis"
-
-        matched_show = None
-        for local_name_lower, show_info in shows_dict.items():
-            if (local_name_lower == feed_lower or 
-                local_name_lower in feed_lower or 
-                feed_lower in local_name_lower):
-                matched_show = show_info
-                break
+        # Exakter Abgleich über die normierten Namen
+        matched_show = shows_dict.get(norm_feed_name)
                 
         if matched_show:
             show_name = matched_show["name"]
@@ -339,7 +342,6 @@ def save():
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
         "selected_library_id": request.form.get("selected_library_id")
     }
-    save_config(new_source_config := new_config) # safety assignment
     save_config(new_config)
     
     action_val = request.form.get("action")
