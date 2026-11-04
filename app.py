@@ -5,8 +5,14 @@ import time
 import re
 import requests
 import xml.etree.ElementTree as ET
-import myjdapi
 from flask import Flask, render_template_string, request, redirect, url_for, Response
+
+# MyJDownloader-Paket optional einbinden, um Container-Abstürze zu verhindern
+try:
+    import myjdapi
+    MYJD_AVAILABLE = True
+except ImportError:
+    MYJD_AVAILABLE = False
 
 app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
@@ -57,7 +63,11 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Link via offizieller myjdapi-Bibliothek an JDownloader"""
+    """Übermittelt den Link an JDownloader, sofern das Paket verfügbar ist"""
+    if not MYJD_AVAILABLE:
+        print("⚠️ MyJDownloader-Paket (myjdapi) ist im Container nicht installiert!")
+        return False
+
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -68,9 +78,8 @@ def send_to_jdownloader(url, package_name):
         
     try:
         jd = myjdapi.Myjdapi()
-        # Verbindung zur MyJDownloader Cloud herstellen
         if not jd.connect(email, password):
-            print("MyJDownloader: Verbindung via myjdapi fehlgeschlagen.")
+            print("MyJDownloader: Verbindung fehlgeschlagen.")
             return False
             
         devices = jd.list_devices()
@@ -87,7 +96,6 @@ def send_to_jdownloader(url, package_name):
         if not device:
             device = jd.get_device(devices[0]["name"])
             
-        # Link an den Linkgrabber des Geräts übergeben
         device.linkgrabber.add_links([{
             "link": url,
             "packageName": package_name,
