@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Ermittelt den Filer-Link mit erweiterten Fallbacks und Diagnose-Ausgaben"""
+    """Extrahiert die Release-ID und leitet den Download-Link direkt ab"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -123,59 +123,28 @@ def extract_hoster_link(release_page_url):
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        print(f"--- Prüfe Release-URL: {release_page_url} ---")
-        
-        # 1. Direkter Aufruf der Release-Seite
-        res = requests.get(release_page_url, headers=headers, timeout=10)
-        print(f"Status Code Release-Seite: {res.status_code}")
-        
-        if res.status_code == 200:
-            html = res.text
-            
-            # Suche nach jeglichem Link, der filer.net enthält
-            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', html, re.IGNORECASE)
-            if filer_match:
-                found_url = filer_match.group(0).rstrip('"\'')
-                print(filer_match.group(0))
-                return found_url
-
-            # 2. Suche nach Outbound- oder Weiterleitungs-Links (z.B. /out/)
-            urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
-            for u in urls:
-                if any(skip in u.lower() for skip in ["google", "cloudflare", "facebook", "twitter", "css", "js", "img", "anonym.to"]):
-                    continue
-                
-                try:
-                    sub_res = requests.get(u, headers=headers, timeout=5)
-                    if sub_res.status_code == 200:
-                        sub_filer = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', sub_res.text, re.IGNORECASE)
-                        if sub_filer:
-                            found_url = sub_filer.group(0).rstrip('"\'')
-                            print(sub_filer.group(0))
-                            return found_url
-                except:
-                    continue
-
-        # 3. Fallback über die Release-ID direkt auf /out/ versuchen
-        match_id = re.search(r'/releases/([a-zA-Z0-9_-]+)', release_page_url)
-        if match_id:
-            release_id = match_id.group(1)
+        release_match = re.search(r'release=(\d+)', release_page_url)
+        if release_match:
+            release_id = release_match.group(1)
             out_url = f"https://nox.to/out/{release_id}"
-            print(f"Versuche direkten Outbound-Pfad: {out_url}")
-            out_res = requests.get(out_url, headers=headers, allow_redirects=True, timeout=10)
-            print(f"Status Code Outbound: {out_res.status_code}")
+            print(f"Versuche direkten Redirect-Aufruf: {out_url}")
             
-            if out_res.status_code == 200:
-                out_filer = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', out_res.text, re.IGNORECASE)
-                if out_filer:
-                    found_url = out_filer.group(0).rstrip('"\'')
-                    print(out_filer.group(0))
-                    return found_url
+            res = requests.get(out_url, headers=headers, allow_redirects=True, timeout=10)
+            final_url = res.url
+            print(f"Final erreichter Link: {final_url}")
+            
+            if "filer.net" in final_url.lower() or "rapidgator" in final_url.lower():
+                return final_url
+
+        res = requests.get(release_page_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
+            if filer_match:
+                return filer_match.group(0).rstrip('"\'')
 
     except Exception as e:
         print(f"Fehler beim Extrahieren des Hoster-Links: {e}")
         
-    print("⚠️ Kein Filer-Link gefunden für diese URL.")
     return None
 
 def get_jellyfin_libraries(jellyfin_url, api_key):
