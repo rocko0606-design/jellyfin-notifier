@@ -109,41 +109,52 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def normalize_name(name):
-    """Wandelt Serientitel in eine einheitliche Form um (keine Sonderzeichen, einheitliches NCIS->Navy CIS Mapping)"""
+    """Wandelt Serientitel in eine einheitliche Form um, entfernt Jahreszahlen und Sonderzeichen"""
     if not name:
         return ""
     n = name.lower().strip()
     
-    # Bekannte Feed-Abkürzungen sauber auf Jellyfin-Schreibweise mappen
-    if n in ["ncis origins", "ncis: origins"]:
+    # Spezifische Mappings für abweichende Schreibweisen
+    if "ncis origins" in n or "ncis: origins" in n:
         n = "navy cis: origins"
     elif n == "ncis":
         n = "navy cis"
         
-    # Entfernt alles außer Buchstaben und Zahlen für einen fehlerfreien exakten Vergleich
+    # Entfernt Jahreszahlen wie (2025) oder .2025. aus dem String für den Abgleich
+    n = re.sub(r'\b(19|20)\d{2}\b', '', n)
+    
+    # Entfernt alles außer Buchstaben und Zahlen
     return re.sub(r'[^a-z0-9]', '', n)
 
 def clean_feed_title(raw_title):
-    """Extrahiert den sauberen Namen und die Episodenkennung aus dem Feed"""
+    """Extrahiert den sauberen Namen und die Episodenkennung absolut zuverlässig"""
+    # Wenn ein Gedankenstrich vorhanden ist, nutzen wir bevorzugt den linken Teil (Anzeigename)
     if "—" in raw_title:
-        release_part = raw_title.split("—")[1].strip()
+        base_text = raw_title.split("—")[0].strip()
     else:
-        release_part = raw_title
+        base_text = raw_title
 
-    match_s = re.search(r's(\d+)\s*e(\d+)', release_part, re.IGNORECASE)
-    match_x = re.search(r'(\d+)x(\d+)', release_part)
+    # Episodenkennung suchen (S01E06 oder 1x06)
+    match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
+    match_x = re.search(r'(\d+)x(\d+)', raw_title)
     
     ep_code = None
     if match_s:
         ep_code = f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}"
-        raw_name = release_part[:match_s.start()]
+        if "—" not in raw_title:
+            base_text = raw_title[:match_s.start()]
     elif match_x:
         ep_code = f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}"
-        raw_name = release_part[:match_x.start()]
-    else:
-        raw_name = release_part
+        if "—" not in raw_title:
+            base_text = raw_title[:match_x.start()]
 
-    clean_name = raw_name.replace('.', ' ').replace('_', ' ').strip()
+    # Falls der linke Teil nach dem Trennen leer ist, nehmen wir den Teil vor SxxExx aus dem Dateinamen
+    if not base_text or "http" in base_text:
+        match_any = re.search(r's\d+e\d+|\d+x\d+', raw_title, re.IGNORECASE)
+        if match_any:
+            base_text = raw_title[:match_any.start()]
+
+    clean_name = base_text.replace('.', ' ').replace('_', ' ').strip()
     return clean_name, ep_code
 
 def perform_check():
@@ -163,7 +174,6 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
-    # Erstelle ein Dictionary mit normierten Schlüsseln (z.B. 'navycisorigins', 'smallprophets', etc.)
     shows_dict = {}
     for show in local_shows:
         norm_key = normalize_name(show["name"])
@@ -200,8 +210,6 @@ def perform_check():
             continue
             
         norm_feed_name = normalize_name(feed_show_name)
-        
-        # Exakter Abgleich über die normierten Namen
         matched_show = shows_dict.get(norm_feed_name)
                 
         if matched_show:
