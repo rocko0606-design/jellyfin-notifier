@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Extrahiert den Hoster-Link über den direkten Regex-Abgleich der Go-Pfad Strukturen"""
+    """Löst die Seite auf und sucht gezielt nach dem finalen Filer-Net-Link oder API-Daten"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -119,7 +119,8 @@ def extract_hoster_link(release_page_url):
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://nox.to/"
+            "Referer": "https://nox.to/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         }
         if cookie_val:
             if "cf_clearance=" in cookie_val or "=" in cookie_val:
@@ -128,41 +129,44 @@ def extract_hoster_link(release_page_url):
                 headers["Cookie"] = f"cf_clearance={cookie_val}"
 
         print(f"Lade Release-Seite: {release_page_url}")
-        res = requests.get(release_page_url, headers=headers, timeout=10)
+        res = requests.get(release_page_url, headers=headers, timeout=10, allow_redirects=True)
         
         if res.status_code == 200:
             html = res.text
             
-            # Suche flexibel nach allen /go/ Pfaden im HTML (auch innerhalb von JS-Objekten)
-            go_matches = re.findall(r'(/go/[a-zA-Z0-9_\-\.]+)', html)
-            for go_path in go_matches:
-                if len(go_path) > 10:  # Go-Pfade haben lange Tokens
-                    go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
-                    print(f"Gefundener Go-Pfad: {go_url}")
-                    
-                    api_url = go_url if "/url" in go_url else f"{go_url}/url"
-                    api_res = requests.get(api_url, headers=headers, timeout=10)
-                    if api_res.status_code == 200:
-                        try:
-                            data = api_res.json()
-                            target_url = data.get("url")
-                            if target_url:
-                                print(f"Echter Hoster-Link erhalten: {target_url}")
-                                return target_url
-                        except:
-                            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', api_res.text, re.IGNORECASE)
-                            if filer_match:
-                                return filer_match.group(0).rstrip('"\'')
-
-            # Fallback: Direkt im Quelltext nach filer.net suchen
-            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
+            filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', html, re.IGNORECASE)
             if filer_match:
-                found_filer = filer_match.group(0).rstrip('"\'')
-                print(f"Direkter Filer-Link im Quelltext gefunden: {found_filer}")
-                return found_filer
-            else:
-                print("⚠️ Kein direkter Link im Quelltext gefunden.")
+                found_url = filer_match.group(0).rstrip('"\'')
+                print(f"Gefundener Filer-Link im Quelltext: {found_url}")
+                return found_url
 
+            go_matches = re.findall(r'["\'](/go/[a-zA-Z0-9_\-\.]+)["\']', html)
+            if not go_matches:
+                go_matches = re.findall(r'(/go/[a-zA-Z0-9_\-\.]+)', html)
+
+            for go_path in go_matches:
+                go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
+                print(f"Prüfe Go-Pfad: {go_url}")
+                
+                api_url = go_url if go_url.endswith('/url') else f"{go_url}/url"
+                api_res = requests.get(api_url, headers=headers, timeout=10, allow_redirects=True)
+                
+                try:
+                    data = api_res.json()
+                    target_url = data.get("url")
+                    if target_url and "filer.net" in target_url:
+                        print(f"Filer-Link über API-JSON erhalten: {target_url}")
+                        return target_url
+                except:
+                    pass
+
+                filer_api_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', api_res.text, re.IGNORECASE)
+                if filer_api_match:
+                    found_url = filer_api_match.group(0).rstrip('"\'')
+                    print(f"Gefundener Filer-Link in API-Antwort: {found_url}")
+                    return found_url
+
+        print("⚠️ Konnte keinen Hoster-Link ermitteln.")
     except Exception as e:
         print(f"Fehler beim Extrahieren: {e}")
         
