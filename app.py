@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Ruft die Zwischenseite auf, liest den SLUG aus und holt den echten filer.net-Link über die API"""
+    """Holt sich den SLUG und AP-Token direkt über die Release-ID und fragt die API ab"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -124,34 +124,35 @@ def extract_hoster_link(release_page_url):
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        print(f"Lade Release-Seite: {release_page_url}")
-        res = requests.get(release_page_url, headers=headers, timeout=10)
+        release_id_match = re.search(r'release=(\d+)', release_page_url)
+        if not release_id_match:
+            return None
+            
+        release_id = release_id_match.group(1)
         
+        outbound_url = f"https://nox.to/out/{release_id}"
+        print(f"Versuche direkten Outbound-Pfad: {outbound_url}")
+        
+        res = requests.get(outbound_url, headers=headers, timeout=10)
+        
+        if res.status_code != 200 or "const SLUG" not in res.text:
+            print(f"Lade Hauptseite zur Link-Suche: {release_page_url}")
+            main_res = requests.get(release_page_url, headers=headers, timeout=10)
+            if main_res.status_code == 200:
+                all_links = re.findall(r'href=["\']([^"\']+)["\']', main_res.text)
+                for link in all_links:
+                    if release_id in link and "login" not in link and "register" not in link:
+                        sub_url = f"https://nox.to{link}" if link.startswith('/') else link
+                        print(f"Gefundener Zwischenlink: {sub_url}")
+                        res = requests.get(sub_url, headers=headers, timeout=10)
+                        break
+
         if res.status_code == 200:
             html = res.text
             
-            # Schritt 1: Prüfen, ob wir direkt auf der Zwischenseite sind oder ob wir den Link suchen müssen
             slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
             ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
             
-            if not slug_match:
-                # Falls wir auf der Serien-Hauptseite sind, suchen wir den Link zur Zwischenseite (z.B. /out/...)
-                release_id_match = re.search(r'release=(\d+)', release_page_url)
-                if release_id_match:
-                    target_release_id = release_id_match.group(1)
-                    all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
-                    for link in all_links:
-                        if target_release_id in link and "login" not in link and "register" not in link:
-                            sub_url = f"https://nox.to{link}" if link.startswith('/') else link
-                            print(f"Folge Link zur Zwischenseite: {sub_url}")
-                            sub_res = requests.get(sub_url, headers=headers, timeout=10)
-                            if sub_res.status_code == 200:
-                                html = sub_res.text
-                                slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
-                                ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
-                                break
-
-            # Schritt 2: Wenn der SLUG gefunden wurde, fragen wir die Download-API ab
             if slug_match:
                 slug = slug_match.group(1)
                 ap_token = ap_match.group(1) if ap_match else ""
@@ -160,7 +161,7 @@ def extract_hoster_link(release_page_url):
                 if ap_token:
                     api_url += f"?ap={ap_token}"
                     
-                print(f"Frage API nach echtem Hoster-Link: {api_url}")
+                print(f"Frage Download-API ab: {api_url}")
                 api_res = requests.get(api_url, headers=headers, timeout=10)
                 if api_res.status_code == 200:
                     data = api_res.json()
@@ -168,14 +169,15 @@ def extract_hoster_link(release_page_url):
                     if target_url:
                         print(f"Echter Hoster-Link erhalten: {target_url}")
                         return target_url
+            else:
+                print("⚠️ Immer noch kein SLUG im Quelltext gefunden. Ist das Cookie gültig?")
 
-        # Fallback: Direkt im HTML nach filer.net suchen
         filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
         if filer_match:
             return filer_match.group(0).rstrip('"\'')
 
     except Exception as e:
-        print(f"Fehler beim Extrahieren über die API: {e}")
+        print(f"Fehler beim Extrahieren: {e}")
         
     return None
 
