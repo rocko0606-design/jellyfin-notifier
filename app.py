@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Folgt dem Link von der Release-Seite zur Download-Zwischenseite und fischt dort den Filer.net-Link heraus"""
+    """Prüft alle Links auf der Release-Seite und den Zwischenseiten, um den echten Filer.net-Link zu finden"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -127,44 +127,37 @@ def extract_hoster_link(release_page_url):
             html = res.text
             urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
             
-            download_page_url = None
-            # 2. Suche nach dem Download-Button / Link auf der Release-Seite
-            for u in urls:
-                if any(term in u.lower() for term in ["download", "out", "go", "redirect", "file"]):
-                    if not any(domain in u.lower() for domain in ["nox.to", "google", "cloudflare", "facebook"]):
-                        download_page_url = u
-                        break
-            
-            if not download_page_url:
-                for u in urls:
-                    if "http" in u and "nox.to" not in u:
-                        download_page_url = u
-                        break
-
-            # 3. Wenn eine Zwischenseite gefunden wurde, diese aufrufen
-            if download_page_url:
-                time.sleep(0.5)
-                sub_res = requests.get(download_page_url, headers=headers, timeout=10)
-                if sub_res.status_code == 200:
-                    sub_html = sub_res.text
-                    sub_urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', sub_html)
-                    
-                    # Suche auf der Zielseite nach Filer.net
-                    for u in sub_urls:
-                        if "filer.net" in u.lower():
-                            return u
-                            
-                    for u in sub_urls:
-                        if any(hoster in u.lower() for hoster in ["rapidgator", "1fichier", "nitroflare", "ddl.to"]):
-                            return u
-                            
-            # Direkt-Fallback falls der Filer-Link direkt im ersten HTML stand
+            # Direkter Check, falls der Filer-Link direkt im ersten HTML steht
             for u in urls:
                 if "filer.net" in u.lower():
                     return u
+
+            # 2. Alle Links durchgehen und auf Zwischenseiten nachschauen
+            for u in urls:
+                if any(skip in u.lower() for skip in ["nox.to/releases", "google", "cloudflare", "facebook", "twitter", "css", "js", "img"]):
+                    continue
+                
+                try:
+                    time.sleep(0.3)
+                    sub_res = requests.get(u, headers=headers, timeout=5)
+                    if sub_res.status_code == 200:
+                        sub_html = sub_res.text
+                        sub_urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', sub_html)
+                        
+                        # Suche auf der Unterseite nach Filer.net
+                        for su in sub_urls:
+                            if "filer.net" in su.lower():
+                                return su
+                                
+                        # Fallback auf andere Hoster auf der Unterseite
+                        for su in sub_urls:
+                            if any(hoster in su.lower() for hoster in ["rapidgator", "1fichier", "nitroflare", "ddl.to"]):
+                                return su
+                except:
+                    continue
                         
     except Exception as e:
-        print(f"Fehler beim Verfolgen des Hoster-Links von {release_page_url}: {e}")
+        print(f"Fehler beim Extrahieren des Hoster-Links von {release_page_url}: {e}")
     return None
 
 def get_jellyfin_libraries(jellyfin_url, api_key):
@@ -364,7 +357,7 @@ def perform_check():
                     "text": f"'{show_name}' – Episoden <b>{ep_str}</b> fehlen noch!{jd_status_text}<br><small style='color: #8c9ba5;'>Release: {raw_title}</small>",
                     "class": "missing"
                 })
-                send_pushover("Fehlende Episode & Download gestartet!", f"Für '{show_name}' ({ep_str}) wurde the Download an JDownloader übergeben.")
+                send_pushover("Fehlende Episode & Download gestartet!", f"Für '{show_name}' ({ep_str}) wurde der Download an JDownloader übergeben.")
 
     if missing_found == 0:
         results.append({"text": "✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
