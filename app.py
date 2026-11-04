@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Extrahiert den echten Hoster-Link über die Release-Detailseite"""
+    """Liest den Hoster-Link direkt über die API-Struktur der Zwischenseite aus"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -126,40 +126,40 @@ def extract_hoster_link(release_page_url):
 
         print(f"Lade Release-Detailseite: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
-        
-        if res.status_code == 200:
-            html = res.text
+        if res.status_code != 200:
+            return None
             
-            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', html, re.IGNORECASE)
-            if filer_match:
-                found_url = filer_match.group(0).rstrip('"\'')
-                print(filer_match.group(0))
-                return found_url
+        html = res.text
 
-            urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
-            for u in urls:
-                if any(skip in u.lower() for skip in ["google", "cloudflare", "facebook", "twitter", "css", "js", "img", "anonym.to"]):
-                    continue
+        # Extrahiere den SLUG und AP-Token aus dem JavaScript im Quelltext
+        slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
+        ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
+        
+        if slug_match:
+            slug = slug_match.group(1)
+            ap_token = ap_match.group(1) if ap_match else ""
+            
+            api_url = f"https://nox.to/go/{slug}/url"
+            if ap_token:
+                api_url += f"?ap={ap_token}"
                 
-                try:
-                    time.sleep(0.3)
-                    sub_res = requests.get(u, headers=headers, timeout=5)
-                    if sub_res.status_code == 200:
-                        sub_filer = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', sub_res.text, re.IGNORECASE)
-                        if sub_filer:
-                            found_url = sub_filer.group(0).rstrip('"\'')
-                            print(sub_filer.group(0))
-                            return found_url
-                            
-                        sub_urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', sub_res.text)
-                        for su in sub_urls:
-                            if "filer.net" in su.lower():
-                                return su
-                except:
-                    continue
+            print(f"Rufe API-Endpunkt ab: {api_url}")
+            api_res = requests.get(api_url, headers=headers, timeout=10)
+            
+            if api_res.status_code == 200:
+                data = api_res.json()
+                target_url = data.get("url")
+                if target_url:
+                    print(f"Gefundener Hoster-Link: {target_url}")
+                    return target_url
+
+        # Fallback: Direkt im HTML nach filer.net suchen
+        filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', html, re.IGNORECASE)
+        if filer_match:
+            return filer_match.group(0).rstrip('"\'')
 
     except Exception as e:
-        print(f"Fehler beim Extrahieren des Hoster-Links: {e}")
+        print(f"Fehler beim Extrahieren über die API: {e}")
         
     return None
 
