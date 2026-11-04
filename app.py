@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "myjd_email": "",
     "myjd_password": "",
     "myjd_device_name": "",
+    "website_cookie": "",
     "check_interval_hours": 6,
     "rss_url": "https://nox.to/releases?type=series",
     "selected_library_id": ""
@@ -55,7 +56,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übergibt den Hoster-Link direkt über die MyJDownloader REST-API (ohne Zusatzpakete)"""
+    """Übergibt den Hoster-Link direkt über die MyJDownloader REST-API"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -133,18 +134,32 @@ def send_to_jdownloader(url, package_name):
     return False
 
 def extract_hoster_link(release_page_url):
-    """Ruft die Release-Seite auf und fischt den echten Hoster-Link (z.B. filer.net) heraus"""
+    """Ruft die Release-Seite auf (mit Login-Cookie) und fischt den echten Hoster-Link heraus"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
+        config = load_config()
+        cookie_val = config.get("website_cookie", "")
+        
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        if cookie_val:
+            headers["Cookie"] = cookie_val
+
         res = requests.get(release_page_url, headers=headers, timeout=10)
         if res.status_code == 200:
             html = res.text
+            # 1. Suche nach direkten Hoster-Links im HTML
             urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
             for u in urls:
-                if any(hoster in u.lower() for hoster in ["filer.net", "rapidgator", "1fichier", "nitroflare"]):
+                if any(hoster in u.lower() for hoster in ["filer.net", "rapidgator", "1fichier", "nitroflare", "ddl.to"]):
                     return u
+            
+            # 2. Fallback: Alle externen Links prüfen
+            for u in urls:
+                if not any(domain in u.lower() for domain in ["nox.to", "google", "cloudflare", "facebook", "twitter"]):
+                    if "http" in u and len(u) > 15:
+                        return u
+                        
     except Exception as e:
         print(f"Fehler beim Extrahieren des Hoster-Links von {release_page_url}: {e}")
     return None
@@ -340,7 +355,7 @@ def perform_check():
                     else:
                         jd_status_text = " | ⚠️ <i>Fehler bei JDownloader-Übergabe</i>"
                 else:
-                    jd_status_text = " | ⚠️ <i>Kein Hoster-Link gefunden</i>"
+                    jd_status_text = " | ⚠️ <i>Kein Hoster-Link gefunden (Cookie prüfen!)</i>"
 
                 results.append({
                     "text": f"'{show_name}' – Episoden <b>{ep_str}</b> fehlen noch!{jd_status_text}<br><small style='color: #8c9ba5;'>Release: {raw_title}</small>",
@@ -660,6 +675,13 @@ HTML_TEMPLATE = """
                         </select>
                     </div>
 
+                    <div class="section-title">Webseiten-Zugang (für Hoster-Links)</div>
+                    <div class="form-group">
+                        <label>Webseiten-Cookie (Session-Cookie)</label>
+                        <input type="text" name="website_cookie" value="{{ config.website_cookie }}" placeholder="z.B. session=abc123xyz oder den kompletten Cookie-Header aus dem Browser">
+                        <small style="color: var(--text-muted); margin-top: 0.3rem;">Damit das Skript eingeloggt ist und Verifizierungen umgeht, kopiere den Cookie deiner Session aus den Entwicklertools deines Browsers.</small>
+                    </div>
+
                     <div class="section-title">Benachrichtigungen & Download</div>
                     <div class="form-grid-2">
                         <div class="form-group">
@@ -769,6 +791,7 @@ def save():
         "myjd_email": request.form.get("myjd_email"),
         "myjd_password": request.form.get("myjd_password"),
         "myjd_device_name": request.form.get("myjd_device_name"),
+        "website_cookie": request.form.get("website_cookie"),
         "rss_url": request.form.get("rss_url"),
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
         "selected_library_id": request.form.get("selected_library_id")
