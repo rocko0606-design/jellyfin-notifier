@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Folgt dem Link von der Feed-Seite über die Detailseite zur Download-Vorbereitung (Filer.net)"""
+    """Sucht direkt nach Filer-Links oder liest verschachtelte Weiterleitungen aus"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -121,21 +121,21 @@ def extract_hoster_link(release_page_url):
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        # 1. Feed-Link aufrufen (Erste Seite / Release-Details)
+        # 1. Release-Detailseite aufrufen
         res = requests.get(release_page_url, headers=headers, timeout=10)
         if res.status_code == 200:
             html = res.text
             
-            # Prüfen ob direkt ein Filer-Link im Quelltext steht
+            # Direkter Regex-Check im HTML nach Filer.net
             filer_match = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', html)
             if filer_match:
                 return filer_match.group(0)
 
-            urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
+            # 2. Suche nach data--Attributen oder versteckten Links im Quelltext (z.B. Outbound-Links)
+            potential_links = re.findall(r'(?:href|data-url|data-link)=[\'"]?(https?://[^\'">\s]+)', html)
             
-            # 2. Alle Links auf der ersten Seite durchgehen, um zur Download-Vorbereitung (Zweite Seite) zu gelangen
-            for u in urls:
-                if any(skip in u.lower() for skip in ["nox.to/releases", "google", "cloudflare", "facebook", "twitter", "css", "js", "img", "anonym.to"]):
+            for u in potential_links:
+                if any(skip in u.lower() for skip in ["google", "cloudflare", "facebook", "twitter", "css", "js", "img"]):
                     continue
                 
                 try:
@@ -144,12 +144,11 @@ def extract_hoster_link(release_page_url):
                     if sub_res.status_code == 200:
                         sub_html = sub_res.text
                         
-                        # Auf der zweiten Seite nach dem echten Filer.net Link suchen
+                        # Auf der Zwischenseite nach Filer suchen
                         sub_filer = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', sub_html)
                         if sub_filer:
                             return sub_filer.group(0)
                             
-                        # Alternativ alle Links auf der zweiten Seite prüfen
                         sub_urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', sub_html)
                         for su in sub_urls:
                             if "filer.net" in su.lower():
