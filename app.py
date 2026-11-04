@@ -109,31 +109,31 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def clean_feed_title(raw_title):
-    """Extrahiert exakt den Serientitel und die Episodenkennung aus dem Feed"""
-    # Beispiel-Feed-Format: "NCIS: Origins — NCIS.Origins.S02E17..."
-    # Wir nehmen den linken Teil vor dem '—' als sauberen Anzeigenamen der Serie
+    """Liest den exakten Release-Namen und extrahiert den sauberen Serientitel sowie SxxExx"""
+    # Wenn ein Gedankenstrich vorhanden ist, nehmen wir den rechten Teil (den echten Release-Namen, z.B. NCIS.Origins.S02E17...)
     if "—" in raw_title:
-        show_part = raw_title.split("—")[0].strip()
+        release_part = raw_title.split("—")[1].strip()
     else:
-        # Falls kein Strich da ist, nehmen wir den Dateinamen vor SxxExx
-        match_s = re.search(r's\d+\s*e\d+', raw_title, re.IGNORECASE)
-        if match_s:
-            show_part = raw_title[:match_s.start()].replace('.', ' ').replace('_', ' ')
-        else:
-            show_part = raw_title
+        release_part = raw_title
 
-    # Episodenkennung (z.B. S01E06 oder S02E17) ermitteln
-    match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
-    match_x = re.search(r'(\d+)x(\d+)', raw_title)
+    # Episodenkennung suchen (z.B. S02E17)
+    match_s = re.search(r's(\d+)\s*e(\d+)', release_part, re.IGNORECASE)
+    match_x = re.search(r'(\d+)x(\d+)', release_part)
     
     ep_code = None
     if match_s:
         ep_code = f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}"
+        raw_name = release_part[:match_s.start()]
     elif match_x:
         ep_code = f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}"
+        raw_name = release_part[:match_x.start()]
+    else:
+        raw_name = release_part
 
-    # Bereinige den Serientitel (Doppelte Leerzeichen entfernen, etc.)
-    clean_name = re.sub(r'\s+', ' ', show_part).strip()
+    # Punkte und Unterstriche in Leerzeichen umwandeln
+    clean_name = raw_name.replace('.', ' ').replace('_', ' ').strip()
+    clean_name = re.sub(r'\s+', ' ', clean_name)
+    
     return clean_name, ep_code
 
 def perform_check():
@@ -153,7 +153,6 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
-    # Erstelle ein Dictionary für den Abgleich (Schlüssel in Kleinbuchstaben)
     shows_dict = {show["name"].lower().strip(): show for show in local_shows}
 
     feed_items = []
@@ -188,9 +187,14 @@ def perform_check():
             
         feed_lower = feed_show_name.lower().strip()
         
+        # Gezieltes Mapping für abweichende Schreibweisen zwischen Feed und Jellyfin
+        if "ncis origins" in feed_lower or "ncis: origins" in feed_lower:
+            feed_lower = "navy cis: origins"
+        elif feed_lower == "ncis":
+            feed_lower = "navy cis"
+
         matched_show = None
         for local_name_lower, show_info in shows_dict.items():
-            # Exakter Treffer oder Teilstring-Treffer in beide Richtungen
             if (local_name_lower == feed_lower or 
                 local_name_lower in feed_lower or 
                 feed_lower in local_name_lower):
@@ -335,6 +339,7 @@ def save():
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
         "selected_library_id": request.form.get("selected_library_id")
     }
+    save_config(new_source_config := new_config) # safety assignment
     save_config(new_config)
     
     action_val = request.form.get("action")
