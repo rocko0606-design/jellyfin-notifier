@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Nutzt die exakte RSS-Feed-URL, um den SLUG und AP-Token auszulesen"""
+    """Folgt dem Feed-Link zur Serie, findet das Release und holt den Link von der Zwischenseite"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -127,29 +127,33 @@ def extract_hoster_link(release_page_url):
             else:
                 headers["Cookie"] = f"cf_clearance={cookie_val}"
 
-        print(f"Lade Feed-Link direkt: {release_page_url}")
+        print(f"Lade Serien-Hauptseite: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
-        print(f"Feed-Link Status: {res.status_code}, Länge: {len(res.text)}")
         
         if res.status_code == 200:
             html = res.text
             
-            target_sub_url = None
+            release_id_match = re.search(r'release=(\d+)', release_page_url)
+            target_release_id = release_id_match.group(1) if release_id_match else None
+            
+            sub_url = None
             all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
             for link in all_links:
-                if "/out/" in link or "/go/" in link or "release=" in link:
-                    if "login" not in link and "register" not in link:
-                        target_sub_url = link
-                        break
+                if target_release_id and target_release_id in link and "login" not in link and "register" not in link:
+                    sub_url = link
+                    break
+                elif ("/out/" in link or "/go/" in link) and "login" not in link and "register" not in link:
+                    sub_url = link
+                    break
 
-            if target_sub_url:
-                if target_sub_url.startswith('/'):
-                    sub_url = f"https://nox.to{target_sub_url}"
+            if sub_url:
+                if sub_url.startswith('/'):
+                    full_sub_url = f"https://nox.to{sub_url}"
                 else:
-                    sub_url = target_sub_url
+                    full_sub_url = sub_url
                 
-                print(f"Rufe Unterlink auf: {sub_url}")
-                sub_res = requests.get(sub_url, headers=headers, timeout=10)
+                print(f"Rufe Zwischenseite auf: {full_sub_url}")
+                sub_res = requests.get(full_sub_url, headers=headers, timeout=10)
                 if sub_res.status_code == 200:
                     html = sub_res.text
 
@@ -173,7 +177,7 @@ def extract_hoster_link(release_page_url):
                         print(f"Echter Hoster-Link erhalten: {target_url}")
                         return target_url
             else:
-                print("⚠️ Kein SLUG gefunden. Prüfe das Cookie.")
+                print("⚠️ Auch auf der Zwischenseite kein SLUG gefunden.")
 
         filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
         if filer_match:
