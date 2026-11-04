@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Folgt dem Feed-Link zur Serie, findet das Release und holt den Link von der Zwischenseite"""
+    """Findet den direkten /go/...-Pfad auf der Zwischenseite und holt den Hoster-Link"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -132,7 +132,6 @@ def extract_hoster_link(release_page_url):
         
         if res.status_code == 200:
             html = res.text
-            
             release_id_match = re.search(r'release=(\d+)', release_page_url)
             target_release_id = release_id_match.group(1) if release_id_match else None
             
@@ -155,33 +154,34 @@ def extract_hoster_link(release_page_url):
                 print(f"Rufe Zwischenseite auf: {full_sub_url}")
                 sub_res = requests.get(full_sub_url, headers=headers, timeout=10)
                 if sub_res.status_code == 200:
-                    html = sub_res.text
-
-            slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
-            ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
-            
-            if slug_match:
-                slug = slug_match.group(1)
-                ap_token = ap_match.group(1) if ap_match else ""
-                
-                api_url = f"https://nox.to/go/{slug}/url"
-                if ap_token:
-                    api_url += f"?ap={ap_token}"
+                    sub_html = sub_res.text
                     
-                print(f"Frage Download-API ab: {api_url}")
-                api_res = requests.get(api_url, headers=headers, timeout=10)
-                if api_res.status_code == 200:
-                    data = api_res.json()
-                    target_url = data.get("url")
-                    if target_url:
-                        print(f"Echter Hoster-Link erhalten: {target_url}")
-                        return target_url
-            else:
-                print("⚠️ Auch auf der Zwischenseite kein SLUG gefunden.")
+                    go_match = re.search(r'href=["\'](/go/[^"\']+)["\']', sub_html)
+                    if not go_match:
+                        go_match = re.search(r'(/go/[^\s<>"\']+)', sub_html)
+                        
+                    if go_match:
+                        go_path = go_match.group(1)
+                        go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
+                        print(f"Gefundener Go-Link: {go_url}")
+                        
+                        api_url = go_url if "/url" in go_url else f"{go_url}/url"
+                        api_res = requests.get(api_url, headers=headers, timeout=10)
+                        if api_res.status_code == 200:
+                            try:
+                                data = api_res.json()
+                                target_url = data.get("url")
+                                if target_url:
+                                    print(f"Echter Hoster-Link erhalten: {target_url}")
+                                    return target_url
+                            except:
+                                filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', api_res.text, re.IGNORECASE)
+                                if filer_match:
+                                    return filer_match.group(0).rstrip('"\'')
 
-        filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
-        if filer_match:
-            return filer_match.group(0).rstrip('"\'')
+            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
+            if filer_match:
+                return filer_match.group(0).rstrip('"\'')
 
     except Exception as e:
         print(f"Fehler beim Extrahieren: {e}")
@@ -829,8 +829,7 @@ def save():
         return redirect(url_for("index", status=status))
         
     elif action_val == "run_check":
-        results = perform_check()
-        app.config["LAST_RESULTS"] = results
+        results = perform_check()        app.config["LAST_RESULTS"] = results
         return redirect(url_for("index"))
         
     return redirect(url_for("index", status="saved"))
