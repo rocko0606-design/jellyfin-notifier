@@ -5,6 +5,7 @@ import time
 import re
 import requests
 import xml.etree.ElementTree as ET
+import myjdapi
 from flask import Flask, render_template_string, request, redirect, url_for, Response
 
 app = Flask(__name__)
@@ -56,7 +57,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übergibt den Hoster-Link direkt über die MyJDownloader REST-API"""
+    """Übermittelt den Link via offizieller myjdapi-Bibliothek an JDownloader"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -66,75 +67,41 @@ def send_to_jdownloader(url, package_name):
         return False
         
     try:
-        session = requests.Session()
-        
-        # 1. Verbindung herstellen / Token holen
-        auth_res = session.post("https://api.jdownloader.org/my/connect", data={
-            "email": email,
-            "password": password,
-            "app": "jellyfin-notifier"
-        }, timeout=10)
-        
-        if auth_res.status_code != 200:
-            print("MyJDownloader: Verbindung fehlgeschlagen.")
+        jd = myjdapi.Myjdapi()
+        # Verbindung zur MyJDownloader Cloud herstellen
+        if not jd.connect(email, password):
+            print("MyJDownloader: Verbindung via myjdapi fehlgeschlagen.")
             return False
             
-        session_token = auth_res.json().get("sessiontoken")
-        if not session_token:
-            return False
-            
-        # 2. Geräte abfragen
-        dev_res = session.get(f"https://api.jdownloader.org/my/listdevices?sessiontoken={session_token}", timeout=10)
-        devices = dev_res.json().get("list", [])
-        
+        devices = jd.list_devices()
         if not devices:
-            print("MyJDownloader: Kein JDownloader-Gerät gefunden.")
+            print("MyJDownloader: Keine Geräte gefunden.")
             return False
             
-        target_device = devices[0]
+        device = None
         if device_name:
             for d in devices:
                 if d.get("name") == device_name:
-                    target_device = d
+                    device = jd.get_device(d["name"])
                     break
-                    
-        device_id = target_device.get("id")
-        
-        # 3. Direktverbindung zum Gerät (Device-Session)
-        dev_connect = session.post(f"https://api.jdownloader.org/t_{session_token}_{device_id}/connect", data={
-            "email": email,
-            "password": password
-        }, timeout=10)
-        
-        if dev_connect.status_code != 200:
-            print("MyJDownloader: Konnte keine Verbindung zum JDownloader-Gerät aufbauen.")
-            return False
+        if not device:
+            device = jd.get_device(devices[0]["name"])
             
-        device_session = dev_connect.json().get("sessiontoken")
+        # Link an den Linkgrabber des Geräts übergeben
+        device.linkgrabber.add_links([{
+            "link": url,
+            "packageName": package_name,
+            "autostart": False
+        }])
+        print(f"Link erfolgreich an JDownloader übergeben: {url}")
+        return True
         
-        # 4. Link an den Linkgrabber senden
-        add_res = session.post(
-            f"https://api.jdownloader.org/t_{session_token}_{device_id}/linkgrabber/addLinks",
-            params={"sessiontoken": device_session},
-            json={
-                "links": url,
-                "packageName": package_name,
-                "autoStart": False
-            },
-            timeout=10
-        )
-        
-        if add_res.status_code == 200:
-            print(f"Link erfolgreich an JDownloader übergeben: {url}")
-            return True
-            
     except Exception as e:
-        print(f"MyJDownloader REST-API Fehler: {e}")
-        
-    return False
+        print(f"MyJDownloader Fehler: {e}")
+        return False
 
 def extract_hoster_link(release_page_url):
-    """Ruft die Release-Seite auf (mit Login-Cookie) und fischt den echten Hoster-Link heraus"""
+    """Ruft die Release-Seite auf (mit Cloudflare-Cookie) und fischt den echten Hoster-Link heraus"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -148,13 +115,11 @@ def extract_hoster_link(release_page_url):
         res = requests.get(release_page_url, headers=headers, timeout=10)
         if res.status_code == 200:
             html = res.text
-            # 1. Suche nach direkten Hoster-Links im HTML
             urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
             for u in urls:
                 if any(hoster in u.lower() for hoster in ["filer.net", "rapidgator", "1fichier", "nitroflare", "ddl.to"]):
                     return u
             
-            # 2. Fallback: Alle externen Links prüfen
             for u in urls:
                 if not any(domain in u.lower() for domain in ["nox.to", "google", "cloudflare", "facebook", "twitter"]):
                     if "http" in u and len(u) > 15:
@@ -355,7 +320,7 @@ def perform_check():
                     else:
                         jd_status_text = " | ⚠️ <i>Fehler bei JDownloader-Übergabe</i>"
                 else:
-                    jd_status_text = " | ⚠️ <i>Kein Hoster-Link gefunden (Cookie prüfen!)</i>"
+                    jd_status_text = " | ⚠️ <i>Kein Hoster-Link gefunden</i>"
 
                 results.append({
                     "text": f"'{show_name}' – Episoden <b>{ep_str}</b> fehlen noch!{jd_status_text}<br><small style='color: #8c9ba5;'>Release: {raw_title}</small>",
@@ -678,8 +643,8 @@ HTML_TEMPLATE = """
                     <div class="section-title">Webseiten-Zugang (für Hoster-Links)</div>
                     <div class="form-group">
                         <label>Webseiten-Cookie (Session-Cookie)</label>
-                        <input type="text" name="website_cookie" value="{{ config.website_cookie }}" placeholder="z.B. session=abc123xyz oder den kompletten Cookie-Header aus dem Browser">
-                        <small style="color: var(--text-muted); margin-top: 0.3rem;">Damit das Skript eingeloggt ist und Verifizierungen umgeht, kopiere den Cookie deiner Session aus den Entwicklertools deines Browsers.</small>
+                        <input type="text" name="website_cookie" value="{{ config.website_cookie }}" placeholder="cf_clearance=...">
+                        <small style="color: var(--text-muted); margin-top: 0.3rem;">Dein Cloudflare-Cookie zur Umgehung von Verifizierungen.</small>
                     </div>
 
                     <div class="section-title">Benachrichtigungen & Download</div>
