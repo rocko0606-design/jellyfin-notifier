@@ -88,7 +88,6 @@ def get_library_series_with_ids(jellyfin_url, api_key, library_id):
     return []
 
 def get_existing_episodes(jellyfin_url, api_key, series_id):
-    """Holt nur Episoden, die physisch auf der Festplatte liegen (ignoriert virtuelle Jellyfin-Zukunftsplatzhalter)"""
     headers = {
         "X-Emby-Token": api_key,
         "Authorization": f'MediaBrowser Token="{api_key}"'
@@ -100,7 +99,6 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
             data = res.json()
             existing = set()
             for ep in data.get("Items", []):
-                # Nur echte Dateien berücksichtigen (haben einen 'Path' und sind nicht 'Virtual')
                 path = ep.get("Path")
                 location_type = ep.get("LocationType")
                 
@@ -128,23 +126,37 @@ def normalize_name(name):
     return re.sub(r'[^a-z0-9]', '', n)
 
 def clean_feed_title(raw_title):
+    """Extrahiert den Serientitel und unterstützt jetzt auch Multi-Episoden-Bereiche (z.B. S01E04-E08)"""
     if "—" in raw_title:
         base_text = raw_title.split("—")[0].strip()
     else:
         base_text = raw_title
 
-    match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
-    match_x = re.search(r'(\d+)x(\d+)', raw_title)
+    # Prüfe auf Multi-Episoden-Bereich (z.B. S01E04-E08 oder S01E04-08)
+    multi_match = re.search(r's(\d+)\s*e(\d+)\s*-\s*(?:e)?(\d+)', raw_title, re.IGNORECASE)
     
-    ep_code = None
-    if match_s:
-        ep_code = f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}"
+    ep_codes = []
+    if multi_match:
+        season = int(multi_match.group(1))
+        start_ep = int(multi_match.group(2))
+        end_ep = int(multi_match.group(3))
+        for ep_num in range(start_ep, end_ep + 1):
+            ep_codes.append(f"S{season:02d}E{ep_num:02d}")
         if "—" not in raw_title:
-            base_text = raw_title[:match_s.start()]
-    elif match_x:
-        ep_code = f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}"
-        if "—" not in raw_title:
-            base_text = raw_title[:match_x.start()]
+            base_text = raw_title[:multi_match.start()]
+    else:
+        # Normale einzelne Episode suchen
+        match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
+        match_x = re.search(r'(\d+)x(\d+)', raw_title)
+        
+        if match_s:
+            ep_codes.append(f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}")
+            if "—" not in raw_title:
+                base_text = raw_title[:match_s.start()]
+        elif match_x:
+            ep_codes.append(f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}")
+            if "—" not in raw_title:
+                base_text = raw_title[:match_x.start()]
 
     if not base_text or "http" in base_text or len(base_text) < 2:
         match_any = re.search(r's\d+e\d+|\d+x\d+', raw_title, re.IGNORECASE)
@@ -152,7 +164,7 @@ def clean_feed_title(raw_title):
             base_text = raw_title[:match_any.start()]
 
     clean_name = base_text.replace('.', ' ').replace('_', ' ').strip()
-    return clean_name, ep_code
+    return clean_name, ep_codes
 
 def perform_check():
     config = load_config()
@@ -201,9 +213,9 @@ def perform_check():
 
     missing_found = 0
     for raw_title in feed_items:
-        feed_show_name, ep_code = clean_feed_title(raw_title)
+        feed_show_name, ep_codes = clean_feed_title(raw_title)
         
-        if not ep_code or not feed_show_name:
+        if not ep_codes or not feed_show_name:
             continue
             
         norm_feed_name = normalize_name(feed_show_name)
@@ -215,13 +227,17 @@ def perform_check():
             
             existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
             
-            if ep_code not in existing_eps:
+            # Prüfe, ob mind. eine Episode aus dem Release (z.B. S01E04 bis E08) in Jellyfin fehlt
+            missing_in_release = [ep for ep in ep_codes if ep not in existing_eps]
+            
+            if missing_in_release:
                 missing_found += 1
+                ep_str = ", ".join(missing_in_release)
                 results.append({
-                    "text": f"🔔 '{show_name}' – <b>{ep_code}</b> ist im Feed erschienen und <b>fehlt noch</b> in deiner Bibliothek! (Release: {raw_title})",
+                    "text": f"🔔 '{show_name}' – Episoden <b>{ep_str}</b> aus Paket fehlen noch in deiner Bibliothek! (Release: {raw_title})",
                     "class": "missing"
                 })
-                send_pushover("Fehlende Episode entdeckt!", f"Für '{show_name}' ist {ep_code} online, die dir in Jellyfin noch fehlt.")
+                send_pushover("Fehlende Episoden entdeckt!", f"Für '{show_name}' fehlen noch Episoden ({ep_str}) aus dem neuesten Release.")
 
     if missing_found == 0:
         results.append({"text": f"✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
@@ -362,7 +378,7 @@ def save():
         
     return redirect(url_for("index", status="saved"))
 
-@app.route("/clear",methods=["POST"])
+@app.route("/clear", methods=["POST"])
 def clear_results():
     app.config["LAST_RESULTS"] = None
     return redirect(url_for("index"))
