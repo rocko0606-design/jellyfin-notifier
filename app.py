@@ -5,7 +5,7 @@ import time
 import re
 import requests
 import xml.etree.ElementTree as ET
-import myjdownloader
+import myjdapi
 from flask import Flask, render_template_string, request, redirect, url_for, Response
 
 app = Flask(__name__)
@@ -64,8 +64,9 @@ def send_to_jdownloader(url, package_name):
     if not email or not password or not url:
         return False
     try:
-        jd = myjdownloader.connect(email, password)
-        devices = jd.get_devices()
+        jd = myjdapi.Myjdapi()
+        jd.connect(email, password)
+        devices = jd.list_devices()
         if not devices:
             print("MyJDownloader: Kein Gerät gefunden.")
             return False
