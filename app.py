@@ -110,41 +110,72 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Löst den Filer-Link direkt über den Outbound-Pfad der Release-ID auf"""
+    """Ermittelt den Filer-Link mit erweiterten Fallbacks und Diagnose-Ausgaben"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
         config = load_config()
         cookie_val = config.get("website_cookie", "")
         
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        # Extrahiere die Release-ID aus der URL (z.B. das letzte Segment)
+        print(f"--- Prüfe Release-URL: {release_page_url} ---")
+        
+        # 1. Direkter Aufruf der Release-Seite
+        res = requests.get(release_page_url, headers=headers, timeout=10)
+        print(f"Status Code Release-Seite: {res.status_code}")
+        
+        if res.status_code == 200:
+            html = res.text
+            
+            # Suche nach jeglichem Link, der filer.net enthält
+            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', html, re.IGNORECASE)
+            if filer_match:
+                found_url = filer_match.group(0).rstrip('"\'')
+                print(filer_match.group(0))
+                return found_url
+
+            # 2. Suche nach Outbound- oder Weiterleitungs-Links (z.B. /out/)
+            urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
+            for u in urls:
+                if any(skip in u.lower() for skip in ["google", "cloudflare", "facebook", "twitter", "css", "js", "img", "anonym.to"]):
+                    continue
+                
+                try:
+                    sub_res = requests.get(u, headers=headers, timeout=5)
+                    if sub_res.status_code == 200:
+                        sub_filer = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', sub_res.text, re.IGNORECASE)
+                        if sub_filer:
+                            found_url = sub_filer.group(0).rstrip('"\'')
+                            print(sub_filer.group(0))
+                            return found_url
+                except:
+                    continue
+
+        # 3. Fallback über die Release-ID direkt auf /out/ versuchen
         match_id = re.search(r'/releases/([a-zA-Z0-9_-]+)', release_page_url)
         if match_id:
             release_id = match_id.group(1)
             out_url = f"https://nox.to/out/{release_id}"
+            print(f"Versuche direkten Outbound-Pfad: {out_url}")
+            out_res = requests.get(out_url, headers=headers, allow_redirects=True, timeout=10)
+            print(f"Status Code Outbound: {out_res.status_code}")
             
-            # Outbound-Seite mit Cookie abrufen
-            res = requests.get(out_url, headers=headers, allow_redirects=True, timeout=10)
-            if res.status_code == 200:
-                html = res.text
-                # Suche nach dem echten Filer.net Link im Quelltext der Zielseite
-                filer_match = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', html)
-                if filer_match:
-                    return filer_match.group(0)
-                    
-        # Fallback: Falls die ID nicht im Standardformat war, versuche die normale Detailseite zu parsen
-        res = requests.get(release_page_url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            filer_match = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', res.text)
-            if filer_match:
-                return filer_match.group(0)
+            if out_res.status_code == 200:
+                out_filer = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', out_res.text, re.IGNORECASE)
+                if out_filer:
+                    found_url = out_filer.group(0).rstrip('"\'')
+                    print(out_filer.group(0))
+                    return found_url
 
     except Exception as e:
-        print(f"Fehler beim Extrahieren des Hoster-Links von {release_page_url}: {e}")
+        print(f"Fehler beim Extrahieren des Hoster-Links: {e}")
+        
+    print("⚠️ Kein Filer-Link gefunden für diese URL.")
     return None
 
 def get_jellyfin_libraries(jellyfin_url, api_key):
