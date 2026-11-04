@@ -126,13 +126,13 @@ def normalize_name(name):
     return re.sub(r'[^a-z0-9]', '', n)
 
 def clean_feed_title(raw_title):
-    """Extrahiert den Serientitel und unterstützt jetzt auch Multi-Episoden-Bereiche (z.B. S01E04-E08)"""
+    """Extrahiert den Serientitel und alle Episoden aus einem Multi-Paket (z.B. S01E04-E08)"""
     if "—" in raw_title:
         base_text = raw_title.split("—")[0].strip()
     else:
         base_text = raw_title
 
-    # Prüfe auf Multi-Episoden-Bereich (z.B. S01E04-E08 oder S01E04-08)
+    # Multi-Episoden-Bereich prüfen (z.B. S01E04-E08)
     multi_match = re.search(r's(\d+)\s*e(\d+)\s*-\s*(?:e)?(\d+)', raw_title, re.IGNORECASE)
     
     ep_codes = []
@@ -145,7 +145,7 @@ def clean_feed_title(raw_title):
         if "—" not in raw_title:
             base_text = raw_title[:multi_match.start()]
     else:
-        # Normale einzelne Episode suchen
+        # Einzelne Episode prüfen
         match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
         match_x = re.search(r'(\d+)x(\d+)', raw_title)
         
@@ -227,17 +227,18 @@ def perform_check():
             
             existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
             
-            # Prüfe, ob mind. eine Episode aus dem Release (z.B. S01E04 bis E08) in Jellyfin fehlt
+            # Prüfe, welche konkreten Episoden aus dem Paket in Jellyfin fehlen
             missing_in_release = [ep for ep in ep_codes if ep not in existing_eps]
             
+            # WICHTIG: Nur Alarm schlagen, wenn wirklich mind. eine Episode aus dem Paket fehlt!
             if missing_in_release:
                 missing_found += 1
                 ep_str = ", ".join(missing_in_release)
                 results.append({
-                    "text": f"🔔 '{show_name}' – Episoden <b>{ep_str}</b> aus Paket fehlen noch in deiner Bibliothek! (Release: {raw_title})",
+                    "text": f"🔔 '{show_name}' – Episoden <b>{ep_str}</b> fehlen noch in deiner Bibliothek! (Release: {raw_title})",
                     "class": "missing"
                 })
-                send_pushover("Fehlende Episoden entdeckt!", f"Für '{show_name}' fehlen noch Episoden ({ep_str}) aus dem neuesten Release.")
+                send_pushover("Fehlende Episoden entdeckt!", f"Für '{show_name}' fehlen noch Episoden ({ep_str}) aus dem Release.")
 
     if missing_found == 0:
         results.append({"text": f"✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
