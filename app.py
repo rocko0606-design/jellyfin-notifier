@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Sucht direkt in allen Links der Hauptseite nach der Release-ID und leitet zur API weiter"""
+    """Nutzt die exakten Go-Links direkt von der Hauptseite"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -133,45 +133,28 @@ def extract_hoster_link(release_page_url):
         if res.status_code == 200:
             html = res.text
             
-            release_id_match = re.search(r'release=(\d+)', release_page_url)
-            if release_id_match:
-                target_id = release_id_match.group(1)
+            go_match = re.search(r'href=["\'](/go/[^"\']+)["\']', html)
+            if not go_match:
+                go_match = re.search(r'(/go/[^\s<>"\']+)', html)
                 
-                all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
-                for link in all_links:
-                    if target_id in link or "/go/" in link or "/out/" in link:
-                        if "login" not in link and "register" not in link:
-                            sub_url = f"https://nox.to{link}" if link.startswith('/') else link
-                            print(f"Gefundener Ziel-Link: {sub_url}")
-                            
-                            api_url = sub_url if "/url" in sub_url else f"{sub_url}/url"
-                            api_res = requests.get(api_url, headers=headers, timeout=10)
-                            
-                            if api_res.status_code == 200:
-                                try:
-                                    data = api_res.json()
-                                    target_url = data.get("url")
-                                    if target_url:
-                                        print(f"Echter Hoster-Link erhalten: {target_url}")
-                                        return target_url
-                                except:
-                                    sub_html = api_res.text
-                                    go_match = re.search(r'(/go/[^\s<>"\']+)', sub_html)
-                                    if go_match:
-                                        go_path = go_match.group(1)
-                                        go_full = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
-                                        go_api = go_full if "/url" in go_full else f"{go_full}/url"
-                                        
-                                        go_res = requests.get(go_api, headers=headers, timeout=10)
-                                        if go_res.status_code == 200:
-                                            try:
-                                                data2 = go_res.json()
-                                                t_url = data2.get("url")
-                                                if t_url:
-                                                    print(f"Echter Hoster-Link über Zwischenseite erhalten: {t_url}")
-                                                    return t_url
-                                            except:
-                                                pass
+            if go_match:
+                go_path = go_match.group(1)
+                go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
+                print(f"Gefundener Go-Link: {go_url}")
+                
+                api_url = go_url if "/url" in go_url else f"{go_url}/url"
+                api_res = requests.get(api_url, headers=headers, timeout=10)
+                if api_res.status_code == 200:
+                    try:
+                        data = api_res.json()
+                        target_url = data.get("url")
+                        if target_url:
+                            print(f"Echter Hoster-Link erhalten: {target_url}")
+                            return target_url
+                    except:
+                        filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', api_res.text, re.IGNORECASE)
+                        if filer_match:
+                            return filer_match.group(0).rstrip('"\'')
 
             filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
             if filer_match:
