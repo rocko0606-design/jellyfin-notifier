@@ -51,7 +51,6 @@ def send_pushover(title, message):
         return False
 
 def get_jellyfin_libraries(jellyfin_url, api_key):
-    """Ruft alle Medien-Bibliotheken von Jellyfin ab (für das Auswahlmenü)"""
     if not jellyfin_url or not api_key:
         return []
     
@@ -69,7 +68,6 @@ def get_jellyfin_libraries(jellyfin_url, api_key):
     return []
 
 def get_library_series(jellyfin_url, api_key, library_id):
-    """Holt alle Serien, die sich in der ausgewählten Bibliothek befinden"""
     if not jellyfin_url or not api_key or not library_id:
         return []
     
@@ -78,7 +76,6 @@ def get_library_series(jellyfin_url, api_key, library_id):
         "Authorization": f'MediaBrowser Token="{api_key}"'
     }
     try:
-        # Fragt alle Serien direkt unter der jeweiligen ParentId (Bibliothek) ab
         url = f"{jellyfin_url.rstrip('/')}/Items?ParentId={library_id}&includeItemTypes=Series&recursive=true"
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
@@ -89,7 +86,6 @@ def get_library_series(jellyfin_url, api_key, library_id):
     return []
 
 def perform_check():
-    """Liest den RSS-Feed aus und gleicht alle Serien der gewählten Bibliothek ab"""
     config = load_config()
     jellyfin_url = config.get("jellyfin_url")
     api_key = config.get("jellyfin_api_key")
@@ -102,12 +98,10 @@ def perform_check():
     if not library_id:
         return [{"text": "⚠️ Keine Jellyfin-Bibliothek ausgewählt. Bitte in den Einstellungen festlegen.", "class": "warning"}]
 
-    # 1. Serien aus der gewählten Jellyfin-Bibliothek holen
     local_shows = get_library_series(jellyfin_url, api_key, library_id)
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
-    # 2. RSS-Feed auslesen
     feed_items = []
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -123,12 +117,10 @@ def perform_check():
     except Exception as e:
         return [{"text": f"❌ Konnte RSS-Feed nicht verarbeiten: {e}", "class": "warning"}]
 
-    # 3. Abgleich: Taucht eine Serie aus der Bibliothek im RSS-Feed auf?
     matched_count = 0
     for show_name in local_shows:
         found_releases = []
         for title in feed_items:
-            # Prüft, ob der Serienname im Feed vorkommt (Groß-/Kleinschreibung egal)
             if show_name.lower() in title.lower():
                 found_releases.append(title)
         
@@ -166,10 +158,12 @@ HTML_TEMPLATE = """
         button:hover { background: #26c6da; }
         .btn-test { background: #ff9800; color: #000; margin-right: 0.5rem; }
         .btn-check { background: #4caf50; color: #fff; margin-right: 0.5rem; }
+        .btn-clear { background: #e53935; color: #fff; float: right; padding: 0.4rem 0.8rem; margin-top: 0; font-size: 0.9rem; }
         .success { background: #1b5e20; color: #a5d6a7; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
         .missing { background: #e65100; color: #ffe0b2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: bold; }
         .warning { background: #b71c1c; color: #ffcdd2; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
-        .status-box { margin-top: 1.5rem; }
+        .status-box { margin-top: 1.5rem; border-top: 1px solid #333; padding-top: 1rem; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
     </style>
 </head>
 <body>
@@ -217,7 +211,12 @@ HTML_TEMPLATE = """
 
         {% if results %}
             <div class="status-box">
-                <h3>Ergebnis des Abgleichs:</h3>
+                <div class="header-row">
+                    <h3 style="margin: 0;">Ergebnis des Abgleichs:</h3>
+                    <form method="POST" action="/clear" style="margin: 0;">
+                        <button type="submit" class="btn-clear">Ergebnisse löschen</button>
+                    </form>
+                </div>
                 {% for r in results %}
                     <div class="{{ r.class }}">{{ r.text }}</div>
                 {% endfor %}
@@ -247,7 +246,6 @@ def index():
 def save():
     action = request.form.get("action")
     
-    config = load_config()
     new_config = {
         "jellyfin_url": request.form.get("jellyfin_url"),
         "jellyfin_api_key": request.form.get("jellyfin_api_key"),
@@ -270,6 +268,11 @@ def save():
         return redirect(url_for("index"))
         
     return redirect(url_for("index", status="saved"))
+
+@app.route("/clear", methods=["POST"])
+def clear_results():
+    app.config["LAST_RESULTS"] = None
+    return redirect(url_for("index"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
