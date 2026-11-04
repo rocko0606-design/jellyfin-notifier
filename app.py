@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Prüft alle Links auf der Release-Seite und den Zwischenseiten, um den echten Filer.net-Link zu finden"""
+    """Ermittelt den echten Download-Link über tiefere HTML-Suche und Button-Muster"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -125,34 +125,29 @@ def extract_hoster_link(release_page_url):
         res = requests.get(release_page_url, headers=headers, timeout=10)
         if res.status_code == 200:
             html = res.text
+            
+            # Suche nach direktem Filer.net Link im Quelltext
+            filer_match = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', html)
+            if filer_match:
+                return filer_match.group(0)
+
             urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
             
-            # Direkter Check, falls der Filer-Link direkt im ersten HTML steht
+            # 2. Suche nach Outbound- oder Mirror-Links auf der Seite
             for u in urls:
-                if "filer.net" in u.lower():
-                    return u
-
-            # 2. Alle Links durchgehen und auf Zwischenseiten nachschauen
-            for u in urls:
-                if any(skip in u.lower() for skip in ["nox.to/releases", "google", "cloudflare", "facebook", "twitter", "css", "js", "img"]):
+                if any(skip in u.lower() for skip in ["nox.to/releases", "google", "cloudflare", "facebook", "twitter", "css", "js", "img", "anonym.to"]):
                     continue
                 
+                if any(hoster in u.lower() for hoster in ["filer.net", "rapidgator", "1fichier", "nitroflare"]):
+                    return u
+
                 try:
-                    time.sleep(0.3)
-                    sub_res = requests.get(u, headers=headers, timeout=5)
+                    sub_res = requests.get(u, headers=headers, timeout=4)
                     if sub_res.status_code == 200:
                         sub_html = sub_res.text
-                        sub_urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', sub_html)
-                        
-                        # Suche auf der Unterseite nach Filer.net
-                        for su in sub_urls:
-                            if "filer.net" in su.lower():
-                                return su
-                                
-                        # Fallback auf andere Hoster auf der Unterseite
-                        for su in sub_urls:
-                            if any(hoster in su.lower() for hoster in ["rapidgator", "1fichier", "nitroflare", "ddl.to"]):
-                                return su
+                        sub_filer = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', sub_html)
+                        if sub_filer:
+                            return sub_filer.group(0)
                 except:
                     continue
                         
