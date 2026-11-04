@@ -109,32 +109,24 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def normalize_name(name):
-    """Wandelt Serientitel in eine einheitliche Form um, entfernt Jahreszahlen und Sonderzeichen"""
     if not name:
         return ""
     n = name.lower().strip()
     
-    # Spezifische Mappings für abweichende Schreibweisen
     if "ncis origins" in n or "ncis: origins" in n:
         n = "navy cis: origins"
     elif n == "ncis":
         n = "navy cis"
         
-    # Entfernt Jahreszahlen wie (2025) oder .2025. aus dem String für den Abgleich
     n = re.sub(r'\b(19|20)\d{2}\b', '', n)
-    
-    # Entfernt alles außer Buchstaben und Zahlen
     return re.sub(r'[^a-z0-9]', '', n)
 
 def clean_feed_title(raw_title):
-    """Extrahiert den sauberen Namen und die Episodenkennung absolut zuverlässig"""
-    # Wenn ein Gedankenstrich vorhanden ist, nutzen wir bevorzugt den linken Teil (Anzeigename)
     if "—" in raw_title:
         base_text = raw_title.split("—")[0].strip()
     else:
         base_text = raw_title
 
-    # Episodenkennung suchen (S01E06 oder 1x06)
     match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
     match_x = re.search(r'(\d+)x(\d+)', raw_title)
     
@@ -148,8 +140,7 @@ def clean_feed_title(raw_title):
         if "—" not in raw_title:
             base_text = raw_title[:match_x.start()]
 
-    # Falls der linke Teil nach dem Trennen leer ist, nehmen wir den Teil vor SxxExx aus dem Dateinamen
-    if not base_text or "http" in base_text:
+    if not base_text or "http" in base_text or len(base_text) < 2:
         match_any = re.search(r's\d+e\d+|\d+x\d+', raw_title, re.IGNORECASE)
         if match_any:
             base_text = raw_title[:match_any.start()]
@@ -164,7 +155,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte präzisen Smart-Abgleich...")
+    print("Starte Smart-Abgleich mit Diagnose-Logs...")
     results = []
     
     if not library_id:
@@ -211,6 +202,9 @@ def perform_check():
             
         norm_feed_name = normalize_name(feed_show_name)
         matched_show = shows_dict.get(norm_feed_name)
+        
+        # DEBUG AUSGABE FÜR JEDEN FEED-EINTRAG IN DEN PORTAINER-LOGS:
+        print(f"DEBUG-CHECK -> Raw: '{raw_title}' | Geparster Name: '{feed_show_name}' (Normiert: '{norm_feed_name}') | Ep: {ep_code} | Match: {matched_show['name'] if matched_show else 'KEIN TREFFER'}")
                 
         if matched_show:
             show_name = matched_show["name"]
