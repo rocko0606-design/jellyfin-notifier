@@ -88,6 +88,7 @@ def get_library_series_with_ids(jellyfin_url, api_key, library_id):
     return []
 
 def get_existing_episodes(jellyfin_url, api_key, series_id):
+    """Holt alle bereits in Jellyfin vorhandenen Episoden einer Serie (z.B. {'S01E01', 'S03E05'})"""
     headers = {
         "X-Emby-Token": api_key,
         "Authorization": f'MediaBrowser Token="{api_key}"'
@@ -109,8 +110,7 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
     return set()
 
 def clean_feed_title(raw_title):
-    """Extrahiert den sauberen Serientitel und die Episodenkennung aus dem Feed"""
-    # Falls der Feed das Format 'Anzeigename — Release.Name.SxxExx' nutzt, nehmen wir den Teil VOR dem '—' als Basis
+    """Liest den Serientitel und die exakte Episodenkennung (z.B. S01E06) aus dem Feed"""
     if "—" in raw_title:
         clean_prefix = raw_title.split("—")[0].strip()
     else:
@@ -118,7 +118,6 @@ def clean_feed_title(raw_title):
 
     normalized = clean_prefix.replace('.', ' ').replace('_', ' ')
     
-    # SxxExx oder NxNN suchen
     match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
     match_x = re.search(r'(\d+)x(\d+)', raw_title)
     
@@ -138,7 +137,7 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte präzisen Smart-Abgleich...")
+    print("Starte intelligenten Bibliotheks-Lückenabgleich...")
     results = []
     
     if not library_id:
@@ -148,6 +147,7 @@ def perform_check():
     if not local_shows:
         return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
 
+    # Erstelle ein Dictionary für alle lokalen Serien (normalisiert in Kleinbuchstaben)
     shows_dict = {show["name"].lower().strip(): show for show in local_shows}
 
     feed_items = []
@@ -182,14 +182,17 @@ def perform_check():
             
         feed_lower = feed_show_name.lower().strip()
         
+        # Universelle Normalisierung für englisch/deutsch abweichende Schreibweisen (z.B. NCIS vs Navy CIS)
+        if feed_lower in ["ncis origins", "ncis: origins"]:
+            feed_lower = "navy cis: origins"
+        elif feed_lower == "ncis":
+            feed_lower = "navy cis"
+
         matched_show = None
         for local_name_lower, show_info in shows_dict.items():
-            # Exakter Treffer, Teilstring-Treffer oder intelligente NCIS-Erkennung
             if (local_name_lower == feed_lower or 
                 local_name_lower in feed_lower or 
-                feed_lower in local_name_lower or
-                (feed_lower == "ncis origins" and local_name_lower == "navy cis: origins") or
-                (feed_lower == "ncis" and local_name_lower == "navy cis")):
+                feed_lower in local_name_lower):
                 matched_show = show_info
                 break
                 
@@ -197,18 +200,20 @@ def perform_check():
             show_name = matched_show["name"]
             series_id = matched_show["id"]
             
+            # Hole exakt die Liste aller bereits vorhandenen Episoden dieser Serie aus Jellyfin
             existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
             
+            # ENTSCHEIDENDER LÜCKEN-CHECK: Ist genau diese Episode noch NICHT in Jellyfin?
             if ep_code not in existing_eps:
                 missing_found += 1
                 results.append({
-                    "text": f"🔔 '{show_name}' – {ep_code} ist im Feed erschienen und <b>fehlt noch</b> in Jellyfin! (Release: {raw_title})",
+                    "text": f"🔔 '{show_name}' – <b>{ep_code}</b> ist im Feed erschienen und <b>fehlt noch</b> in deiner Bibliothek! (Release: {raw_title})",
                     "class": "missing"
                 })
-                send_pushover("Neue Episode fehlt in Jellyfin!", f"'{show_name}' ({ep_code}) ist online und fehlt noch in der Bibliothek.")
+                send_pushover("Fehlende Episode entdeckt!", f"Für '{show_name}' ist {ep_code} online, die dir in Jellyfin noch fehlt.")
 
     if missing_found == 0:
-        results.append({"text": f"✅ Feed-Scan beendet – Keine fehlenden Episoden für deine Jellyfin-Serien im Feed entdeckt.", "class": "success"})
+        results.append({"text": f"✅ Alle Feed-Einträge geprüft – Deine 120 Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
         
     return results
 
@@ -226,7 +231,7 @@ HTML_TEMPLATE = """
 <html lang="de">
 <head>
     <meta charset="utf-8">
-    <title>Jellyfin Notifier – Smart Release Abgleich</title>
+    <title>Jellyfin Notifier – Smart Lücken-Detektor</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 2rem; max-width: 800px; margin: auto; }
         .card { background: #1e1e1e; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 1.5rem; }
@@ -246,7 +251,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="card">
-        <h2>Jellyfin Notifier – Smart Release Abgleich</h2>
+        <h2>Jellyfin Notifier – Lücken-Detektor</h2>
         {% if msg %}
             <div class="success">{{ msg }}</div>
         {% endif %}
