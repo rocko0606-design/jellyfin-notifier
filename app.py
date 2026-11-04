@@ -1,4 +1,16 @@
 import os
+import sys
+import subprocess
+
+# Automatischer Selbst-Test & Installation für MyJDownloader, damit nichts verloren geht
+try:
+    import myjdapi
+    import Crypto
+except ImportError:
+    print("📦 Installiere benötigte JDownloader-Bibliotheken automatisch...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "myjdapi", "pycryptodome"])
+    import myjdapi
+
 import json
 import threading
 import time
@@ -6,13 +18,6 @@ import re
 import requests
 import xml.etree.ElementTree as ET
 from flask import Flask, render_template_string, request, redirect, url_for, Response
-
-# MyJDownloader-Paket optional einbinden, um Container-Abstürze zu verhindern
-try:
-    import myjdapi
-    MYJD_AVAILABLE = True
-except ImportError:
-    MYJD_AVAILABLE = False
 
 app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
@@ -63,11 +68,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Link an JDownloader, sofern das Paket verfügbar ist"""
-    if not MYJD_AVAILABLE:
-        print("⚠️ MyJDownloader-Paket (myjdapi) ist im Container nicht installiert!")
-        return False
-
+    """Übermittelt den Hoster-Link via offizieller myjdapi-Bibliothek an JDownloader"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -79,7 +80,7 @@ def send_to_jdownloader(url, package_name):
     try:
         jd = myjdapi.Myjdapi()
         if not jd.connect(email, password):
-            print("MyJDownloader: Verbindung fehlgeschlagen.")
+            print("MyJDownloader: Verbindung via myjdapi fehlgeschlagen.")
             return False
             
         devices = jd.list_devices()
