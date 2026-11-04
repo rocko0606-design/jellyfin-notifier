@@ -829,7 +829,8 @@ def save():
         return redirect(url_for("index", status=status))
         
     elif action_val == "run_check":
-        results = perform_check()        app.config["LAST_RESULTS"] = results
+        results = perform_check()
+        app.config["LAST_RESULTS"] = results
         return redirect(url_for("index"))
         
     return redirect(url_for("index", status="saved"))
