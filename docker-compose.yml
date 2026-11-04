@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  jellyfin-notifier:
+    build: .
+    container_name: jellyfin-notifier
+    restart: unless-stopped
+    ports:
+      - "6060:5000"
+    volumes:
+      - jellyfin_data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  jellyfin_data:
