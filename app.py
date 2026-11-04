@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import requests
+import xml.etree.ElementTree as ET
 from flask import Flask, render_template_string, request, redirect, url_for
 
 app = Flask(__name__)
@@ -14,10 +15,10 @@ DEFAULT_CONFIG = {
     "pushover_token": "",
     "pushover_user": "",
     "check_interval_hours": 6,
+    "rss_url": "https://nox.to/releases?type=series",
     "shows": [
         {
-            "name": "Breaking Bad", 
-            "source_url": "https://api.tvmaze.com/search/shows?q=Breaking+Bad"
+            "name": "4 Blocks"
         }
     ]
 }
@@ -85,48 +86,58 @@ def get_jellyfin_episodes(jellyfin_url, api_key, show_name):
         return set()
 
 def perform_check():
-    """Führt den Abgleich für alle hinterlegten Serien durch und liefert strukturierte Ergebnisse"""
+    """Liest den RSS-Feed aus und gleicht gefundene Releases mit Jellyfin ab"""
     config = load_config()
     jellyfin_url = config.get("jellyfin_url")
     api_key = config.get("jellyfin_api_key")
+    rss_url = config.get("rss_url")
     
-    print("Starte Serien-Abgleich...")
+    print("Starte RSS-Feed Abgleich...")
     results = []
     
+    feed_items = []
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(rss_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            # Versuche XML / RSS zu parsen
+            root = ET.fromstring(res.content)
+            # Standard RSS-Struktur: channel -> item
+            for item in root.findall(".//item"):
+                title = item.find("text") or item.find("title")
+                if title is not None and title.text:
+                    feed_items.append(title.text)
+        else:
+            results.append({"text": f"❌ Fehler beim Laden des RSS-Feeds (Status {res.status_code})", "class": "warning"})
+            return results
+    except Exception as e:
+        # Falls es kein reiner XML-Feed ist, fangen wir es ab
+        results.append({"text": f"❌ Konnte RSS-Feed nicht verarbeiten: {e}", "class": "warning"})
+        return results
+
     for show in config.get("shows", []):
         name = show.get("name")
-        source_url = show.get("source_url")
-        
-        if not source_url:
+        if not name:
             continue
             
         try:
-            res = requests.get(source_url, timeout=5).json()
-            if res:
-                show_id = res[0]["show"]["id"]
-                episodes = requests.get(f"https://api.tvmaze.com/shows/{show_id}/episodes", timeout=5).json()
-                latest_ep = episodes[-1] if episodes else None
+            existing_eps = get_jellyfin_episodes(jellyfin_url, api_key, name)
+            
+            # Suche im Feed nach Einträgen, die den Seriennamen enthalten
+            found_releases = []
+            for title in feed_items:
+                if name.lower() in title.lower():
+                    found_releases.append(title)
+            
+            if not existing_eps:
+                results.append({"text": f"⚠️ Serie '{name}' wurde nicht in deiner Jellyfin-Bibliothek gefunden!", "class": "warning"})
+            elif found_releases:
+                # Hier wurde etwas im Feed gefunden
+                results.append({"text": f"🔔 '{name}': Neue Einträge im Feed gefunden: {found_releases[0]}", "class": "missing"})
+                send_pushover("Neuer Release im Feed!", f"Für '{name}' wurde ein neuer Eintrag im Feed entdeckt.")
+            else:
+                results.append({"text": f"✅ '{name}': Keine neuen Releases im Feed gefunden. Jellyfin ist aktuell.", "class": "success"})
                 
-                if latest_ep:
-                    season = latest_ep['season']
-                    number = latest_ep['number']
-                    ep_code = f"S{season:02d}E{number:02d}"
-                    
-                    existing_eps = get_jellyfin_episodes(jellyfin_url, api_key, name)
-                    found_in_jellyfin = ep_code in existing_eps
-                    
-                    if not existing_eps:
-                        status_text = f"⚠️ Serie '{name}' wurde nicht in deiner Jellyfin-Bibliothek gefunden!"
-                        type_class = "warning"
-                    elif found_in_jellyfin:
-                        status_text = f"✅ '{name}': Neueste Folge ({ep_code}) ist bereits in Jellyfin vorhanden. Alles aktuell!"
-                        type_class = "success"
-                    else:
-                        status_text = f"🔔 '{name}': Neueste Folge ({ep_code}) ist online erschienen, fehlt aber noch in Jellyfin!"
-                        type_class = "missing"
-                        send_pushover("Neue Serienfolge!", f"{name} – {ep_code} ist erschienen und fehlt noch in Jellyfin!")
-                        
-                    results.append({"text": status_text, "class": type_class})
         except Exception as e:
             err_msg = f"❌ Fehler bei Prüfung von {name}: {e}"
             print(err_msg)
@@ -168,7 +179,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="card">
-        <h2>Jellyfin Notifier – Weboberfläche</h2>
+        <h2>Jellyfin Notifier – RSS Edition</h2>
         {% if msg %}
             <div class="success">{{ msg }}</div>
         {% endif %}
@@ -187,6 +198,9 @@ HTML_TEMPLATE = """
             <label>Pushover User Key</label>
             <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
 
+            <label>RSS-Feed URL</label>
+            <input type="text" name="rss_url" value="{{ config.rss_url }}" required>
+
             <div style="margin-top: 1.5rem;">
                 <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht senden</button>
                 <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen (Manuell)</button>
@@ -199,10 +213,8 @@ HTML_TEMPLATE = """
             <div id="shows-container">
                 {% for show in config.shows %}
                 <div class="show-box">
-                    <label>Serienname (wie in Jellyfin & TVMaze):</label>
+                    <label>Serienname (wie in Jellyfin):</label>
                     <input type="text" name="show_name" value="{{ show.name }}" required>
-                    <label>Webseite / API URL (Abgleich, z.B. TVMaze Suche):</label>
-                    <input type="text" name="show_source" value="{{ show.source_url }}">
                     <button type="button" class="btn-danger" onclick="this.parentElement.remove()">Serie entfernen</button>
                 </div>
                 {% endfor %}
@@ -228,10 +240,8 @@ HTML_TEMPLATE = """
         const div = document.createElement('div');
         div.className = 'show-box';
         div.innerHTML = `
-            <label>Serienname (wie in Jellyfin & TVMaze):</label>
+            <label>Serienname (wie in Jellyfin):</label>
             <input type="text" name="show_name" required>
-            <label>Webseite / API URL (Abgleich, z.B. TVMaze Suche):</label>
-            <input type="text" name="show_source">
             <button type="button" class="btn-danger" onclick="this.parentElement.remove()">Serie entfernen</button>
         `;
         container.appendChild(div);
@@ -260,20 +270,14 @@ def save():
     action = request.form.get("action")
     
     names = request.form.getlist("show_name")
-    sources = request.form.getlist("show_source")
-    
-    shows = []
-    for i in range(len(names)):
-        shows.append({
-            "name": names[i],
-            "source_url": sources[i]
-        })
+    shows = [{"name": name} for name in names]
         
     new_config = {
         "jellyfin_url": request.form.get("jellyfin_url"),
         "jellyfin_api_key": request.form.get("jellyfin_api_key"),
         "pushover_token": request.form.get("pushover_token"),
         "pushover_user": request.form.get("pushover_user"),
+        "rss_url": request.form.get("rss_url"),
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
         "shows": shows
     }
