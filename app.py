@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Holt sich den SLUG aus der Zwischenseite und fragt die Download-API ab"""
+    """Liest den SLUG direkt von der Release-Detailseite aus und fragt die API ab"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -124,47 +124,39 @@ def extract_hoster_link(release_page_url):
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        release_match = re.search(r'release=(\d+)', release_page_url)
-        if release_match:
-            release_id = release_match.group(1)
-            out_url = f"https://nox.to/out/{release_id}"
-            print(f"Lade Outbound-Seite: {out_url}")
-            
-            res = requests.get(out_url, headers=headers, timeout=10)
-            print(f"Outbound Status: {res.status_code}, Länge: {len(res.text)}")
-            
-            if res.status_code == 200:
-                html = res.text
-                
-                slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
-                if not slug_match:
-                    print(f"⚠️ Kein SLUG gefunden! Ausschnitt der Seite: {html[:300].replace(chr(10), ' ')}")
-                
-                ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
-                
-                if slug_match:
-                    slug = slug_match.group(1)
-                    ap_token = ap_match.group(1) if ap_match else ""
-                    
-                    api_url = f"https://nox.to/go/{slug}/url"
-                    if ap_token:
-                        api_url += f"?ap={ap_token}"
-                        
-                    print(f"Frage Download-API ab: {api_url}")
-                    api_res = requests.get(api_url, headers=headers, timeout=10)
-                    
-                    if api_res.status_code == 200:
-                        data = api_res.json()
-                        target_url = data.get("url")
-                        if target_url:
-                            print(f"Echter Hoster-Link erhalten: {target_url}")
-                            return target_url
-
+        print(f"Lade Release-Detailseite: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
+        print(f"Detailseite Status: {res.status_code}, Länge: {len(res.text)}")
+        
         if res.status_code == 200:
-            filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
-            if filer_match:
-                return filer_match.group(0).rstrip('"\'')
+            html = res.text
+            
+            slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
+            ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
+            
+            if slug_match:
+                slug = slug_match.group(1)
+                ap_token = ap_match.group(1) if ap_match else ""
+                
+                api_url = f"https://nox.to/go/{slug}/url"
+                if ap_token:
+                    api_url += f"?ap={ap_token}"
+                    
+                print(f"Frage Download-API ab: {api_url}")
+                api_res = requests.get(api_url, headers=headers, timeout=10)
+                
+                if api_res.status_code == 200:
+                    data = api_res.json()
+                    target_url = data.get("url")
+                    if target_url:
+                        print(f"Echter Hoster-Link erhalten: {target_url}")
+                        return target_url
+            else:
+                print(f"⚠️ Kein SLUG auf der Detailseite gefunden. Ausschnitt: {html[:300].replace(chr(10), ' ')}")
+
+        filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
+        if filer_match:
+            return filer_match.group(0).rstrip('"\'')
 
     except Exception as e:
         print(f"Fehler beim Extrahieren über die API: {e}")
