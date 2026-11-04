@@ -131,10 +131,15 @@ def extract_hoster_link(release_page_url):
             print(f"Lade Outbound-Seite: {out_url}")
             
             res = requests.get(out_url, headers=headers, timeout=10)
+            print(f"Outbound Status: {res.status_code}, Länge: {len(res.text)}")
+            
             if res.status_code == 200:
                 html = res.text
                 
                 slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
+                if not slug_match:
+                    print(f"⚠️ Kein SLUG gefunden! Ausschnitt der Seite: {html[:300].replace(chr(10), ' ')}")
+                
                 ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
                 
                 if slug_match:
