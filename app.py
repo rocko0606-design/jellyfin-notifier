@@ -10,7 +10,7 @@ app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
 
 DEFAULT_CONFIG = {
-    "jellyfin_url": "http://192.168.1.100:8096",
+    "jellyfin_url": "http://192.168.0.73:8096",
     "jellyfin_api_key": "",
     "pushover_token": "",
     "pushover_user": "",
@@ -60,7 +60,12 @@ def get_jellyfin_episodes(jellyfin_url, api_key, show_name):
         print("Jellyfin URL oder API-Key fehlt in der Konfiguration.")
         return set()
     
-    headers = {"X-Embi-Token": api_key}
+    # Beide Authentifizierungs-Header für maximale Kompatibilität übergeben
+    headers = {
+        "X-Emby-Token": api_key,
+        "Authorization": f'MediaBrowser Token="{api_key}"'
+    }
+    
     try:
         search_url = f"{jellyfin_url.rstrip('/')}/Items?searchTerm={requests.utils.quote(show_name)}&includeItemTypes=Series&recursive=true"
         res = requests.get(search_url, headers=headers, timeout=5)
@@ -72,11 +77,12 @@ def get_jellyfin_episodes(jellyfin_url, api_key, show_name):
         try:
             data = res.json()
         except Exception:
-            print(f"Jellyfin lieferte kein JSON (möglicherweise HTML-Fehlerseite): {res.text[:150]}")
+            print(f"Jellyfin lieferte kein JSON: {res.text[:150]}")
             return set()
             
         items = data.get("Items", [])
         if not items:
+            print(f"Serie '{show_name}' wurde in Jellyfin nicht gefunden.")
             return set()
             
         series_id = items[0]["Id"]
@@ -142,7 +148,7 @@ def perform_check():
                     found_releases.append(title)
             
             if not existing_eps:
-                results.append({"text": f"⚠️ Serie '{name}' wurde nicht in der Jellyfin-Bibliothek gefunden (oder Verbindung fehlgeschlagen).", "class": "warning"})
+                results.append({"text": f"⚠️ Serie '{name}' wurde nicht in Jellyfin gefunden oder API-Key ungültig.", "class": "warning"})
             elif found_releases:
                 results.append({"text": f"🔔 '{name}': Neue Einträge im Feed gefunden: {found_releases[0]}", "class": "missing"})
                 send_pushover("Neuer Release im Feed!", f"Für '{name}' wurde ein neuer Eintrag im Feed entdeckt.")
@@ -197,7 +203,7 @@ HTML_TEMPLATE = """
         
         <form method="POST" action="/save">
             <h3>Allgemeine Einstellungen</h3>
-            <label>Jellyfin URL (z.B. http://192.168.1.50:8096)</label>
+            <label>Jellyfin URL (z.B. http://192.168.0.73:8096)</label>
             <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
 
             <label>Jellyfin API-Key</label>
@@ -246,6 +252,9 @@ HTML_TEMPLATE = """
         {% endif %}
     </div>
     <script>
+    function addShop() {
+        // Dummy
+    }
     function addShow() {
         const container = document.getElementById('shows-container');
         const div = document.createElement('div');
