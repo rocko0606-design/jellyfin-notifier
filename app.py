@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Liest den SLUG direkt von der Release-Detailseite aus und fragt die API ab"""
+    """Sucht auf der Serien-Detailseite nach dem korrekten Release-Link und holt den SLUG"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -124,35 +124,53 @@ def extract_hoster_link(release_page_url):
         if cookie_val:
             headers["Cookie"] = cookie_val
 
-        print(f"Lade Release-Detailseite: {release_page_url}")
+        release_id_match = re.search(r'release=(\d+)', release_page_url)
+        target_release_id = release_id_match.group(1) if release_id_match else None
+
+        print(f"Lade Serien-Detailseite: {release_page_url}")
         res = requests.get(release_page_url, headers=headers, timeout=10)
-        print(f"Detailseite Status: {res.status_code}, Länge: {len(res.text)}")
         
         if res.status_code == 200:
             html = res.text
             
-            slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', html)
-            ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', html)
-            
-            if slug_match:
-                slug = slug_match.group(1)
-                ap_token = ap_match.group(1) if ap_match else ""
+            specific_link = None
+            all_links = re.findall(r'href=["\']([^"\']+)["\']', html)
+            for link in all_links:
+                if target_release_id and target_release_id in link:
+                    specific_link = link
+                    break
+                elif "/out/" in link or "release=" in link:
+                    specific_link = link
+
+            if specific_link:
+                if specific_link.startswith('/'):
+                    target_out_url = f"https://nox.to{specific_link}"
+                else:
+                    target_out_url = specific_link
                 
-                api_url = f"https://nox.to/go/{slug}/url"
-                if ap_token:
-                    api_url += f"?ap={ap_token}"
+                print(f"Rufe Zwischenseite auf: {target_out_url}")
+                sub_res = requests.get(target_out_url, headers=headers, timeout=10)
+                if sub_res.status_code == 200:
+                    sub_html = sub_res.text
+                    slug_match = re.search(r'const\s+SLUG\s*=\s*"([^"]+)"', sub_html)
+                    ap_match = re.search(r'const\s+AP\s*=\s*"([^"]+)"', sub_html)
                     
-                print(f"Frage Download-API ab: {api_url}")
-                api_res = requests.get(api_url, headers=headers, timeout=10)
-                
-                if api_res.status_code == 200:
-                    data = api_res.json()
-                    target_url = data.get("url")
-                    if target_url:
-                        print(f"Echter Hoster-Link erhalten: {target_url}")
-                        return target_url
-            else:
-                print(f"⚠️ Kein SLUG auf der Detailseite gefunden. Ausschnitt: {html[:300].replace(chr(10), ' ')}")
+                    if slug_match:
+                        slug = slug_match.group(1)
+                        ap_token = ap_match.group(1) if ap_match else ""
+                        
+                        api_url = f"https://nox.to/go/{slug}/url"
+                        if ap_token:
+                            api_url += f"?ap={ap_token}"
+                            
+                        print(f"Frage Download-API ab: {api_url}")
+                        api_res = requests.get(api_url, headers=headers, timeout=10)
+                        if api_res.status_code == 200:
+                            data = api_res.json()
+                            target_url = data.get("url")
+                            if target_url:
+                                print(f"Echter Hoster-Link erhalten: {target_url}")
+                                return target_url
 
         filer_match = re.search(r'https?://[^\s<>"]+filer\.net[^\s<>"]*', res.text, re.IGNORECASE)
         if filer_match:
