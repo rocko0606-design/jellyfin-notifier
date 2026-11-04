@@ -110,7 +110,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Zieht den direkten Filer.net-Link über die Feed-ID oder die Weiterleitungsseite"""
+    """Löst den Filer-Link direkt über den Outbound-Pfad der Release-ID auf"""
     if not release_page_url or "http" not in release_page_url:
         return None
     try:
@@ -121,38 +121,27 @@ def extract_hoster_link(release_page_url):
         if cookie_val:
             headers["Cookie"] = cookie_val
 
+        # Extrahiere die Release-ID aus der URL (z.B. das letzte Segment)
+        match_id = re.search(r'/releases/([a-zA-Z0-9_-]+)', release_page_url)
+        if match_id:
+            release_id = match_id.group(1)
+            out_url = f"https://nox.to/out/{release_id}"
+            
+            # Outbound-Seite mit Cookie abrufen
+            res = requests.get(out_url, headers=headers, allow_redirects=True, timeout=10)
+            if res.status_code == 200:
+                html = res.text
+                # Suche nach dem echten Filer.net Link im Quelltext der Zielseite
+                filer_match = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', html)
+                if filer_match:
+                    return filer_match.group(0)
+                    
+        # Fallback: Falls die ID nicht im Standardformat war, versuche die normale Detailseite zu parsen
         res = requests.get(release_page_url, headers=headers, timeout=10)
         if res.status_code == 200:
-            html = res.text
-            
-            filer_match = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', html)
+            filer_match = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', res.text)
             if filer_match:
                 return filer_match.group(0)
-
-            urls = re.findall(r'href=[\'"]?(https?://[^\'">\s]+)', html)
-            for u in urls:
-                if any(skip in u.lower() for skip in ["google", "cloudflare", "facebook", "twitter", "css", "js", "img", "anonym.to"]):
-                    continue
-                
-                try:
-                    sub_res = requests.get(u, headers=headers, timeout=5)
-                    if sub_res.status_code == 200:
-                        sub_html = sub_res.text
-                        sub_filer = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', sub_html)
-                        if sub_filer:
-                            return sub_filer.group(0)
-                except:
-                    continue
-                    
-        if "/releases/" in release_page_url:
-            release_id = release_page_url.split("/")[-1]
-            out_url = f"https://nox.to/out/{release_id}"
-            out_res = requests.get(out_url, headers=headers, timeout=5)
-            if out_res.status_code == 200:
-                out_html = out_res.text
-                out_filer = re.search(r'https?://(?:www\.)?filer\.net/(?:folder|file)/[a-zA-Z0-9]+', out_html)
-                if out_filer:
-                    return out_filer.group(0)
 
     except Exception as e:
         print(f"Fehler beim Extrahieren des Hoster-Links von {release_page_url}: {e}")
