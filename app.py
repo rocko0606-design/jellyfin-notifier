@@ -57,21 +57,37 @@ def send_pushover(title, message):
 def get_jellyfin_episodes(jellyfin_url, api_key, show_name):
     """Durchsucht die Jellyfin-Bibliothek über die API nach vorhandenen Episoden einer Serie"""
     if not jellyfin_url or not api_key:
+        print("Jellyfin URL oder API-Key fehlt in der Konfiguration.")
         return set()
     
     headers = {"X-Embi-Token": api_key}
     try:
         search_url = f"{jellyfin_url.rstrip('/')}/Items?searchTerm={requests.utils.quote(show_name)}&includeItemTypes=Series&recursive=true"
-        res = requests.get(search_url, headers=headers, timeout=5).json()
-        items = res.get("Items", [])
+        res = requests.get(search_url, headers=headers, timeout=5)
         
+        if res.status_code != 200:
+            print(f"Jellyfin HTTP-Fehler {res.status_code} für {show_name}: {res.text[:150]}")
+            return set()
+            
+        try:
+            data = res.json()
+        except Exception:
+            print(f"Jellyfin lieferte kein JSON (möglicherweise HTML-Fehlerseite): {res.text[:150]}")
+            return set()
+            
+        items = data.get("Items", [])
         if not items:
             return set()
             
         series_id = items[0]["Id"]
         ep_url = f"{jellyfin_url.rstrip('/')}/Shows/{series_id}/Episodes"
-        ep_res = requests.get(ep_url, headers=headers, timeout=5).json()
-        episodes = ep_res.get("Items", [])
+        ep_res = requests.get(ep_url, headers=headers, timeout=5)
+        
+        if ep_res.status_code != 200:
+            return set()
+            
+        ep_data = ep_res.json()
+        episodes = ep_data.get("Items", [])
         
         existing_eps = set()
         for ep in episodes:
@@ -100,9 +116,7 @@ def perform_check():
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(rss_url, headers=headers, timeout=10)
         if res.status_code == 200:
-            # Versuche XML / RSS zu parsen
             root = ET.fromstring(res.content)
-            # Standard RSS-Struktur: channel -> item
             for item in root.findall(".//item"):
                 title = item.find("text") or item.find("title")
                 if title is not None and title.text:
@@ -111,7 +125,6 @@ def perform_check():
             results.append({"text": f"❌ Fehler beim Laden des RSS-Feeds (Status {res.status_code})", "class": "warning"})
             return results
     except Exception as e:
-        # Falls es kein reiner XML-Feed ist, fangen wir es ab
         results.append({"text": f"❌ Konnte RSS-Feed nicht verarbeiten: {e}", "class": "warning"})
         return results
 
@@ -123,16 +136,14 @@ def perform_check():
         try:
             existing_eps = get_jellyfin_episodes(jellyfin_url, api_key, name)
             
-            # Suche im Feed nach Einträgen, die den Seriennamen enthalten
             found_releases = []
             for title in feed_items:
                 if name.lower() in title.lower():
                     found_releases.append(title)
             
             if not existing_eps:
-                results.append({"text": f"⚠️ Serie '{name}' wurde nicht in deiner Jellyfin-Bibliothek gefunden!", "class": "warning"})
+                results.append({"text": f"⚠️ Serie '{name}' wurde nicht in der Jellyfin-Bibliothek gefunden (oder Verbindung fehlgeschlagen).", "class": "warning"})
             elif found_releases:
-                # Hier wurde etwas im Feed gefunden
                 results.append({"text": f"🔔 '{name}': Neue Einträge im Feed gefunden: {found_releases[0]}", "class": "missing"})
                 send_pushover("Neuer Release im Feed!", f"Für '{name}' wurde ein neuer Eintrag im Feed entdeckt.")
             else:
