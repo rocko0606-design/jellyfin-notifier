@@ -76,7 +76,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Hoster-Link via myjdapi an JDownloader mit verifiziertem Verbindungs-Check"""
+    """Übermittelt den Hoster-Link via myjdapi an JDownloader"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -90,12 +90,12 @@ def send_to_jdownloader(url, package_name):
         jd = myjdapi.Myjdapi()
         jd.set_app_key("JellyfinNotifier")
         if not jd.connect(email, password):
-            print("❌ MyJDownloader: Verbindung fehlgeschlagen (Login ungültig).")
+            print("❌ MyJDownloader: Verbindung fehlgeschlagen.")
             return False
             
         devices = jd.list_devices()
         if not devices:
-            print("❌ MyJDownloader: Keine Geräte gefunden. Ist JDownloader online und eingeloggt?")
+            print("❌ MyJDownloader: Keine Geräte gefunden.")
             return False
             
         device = None
@@ -107,18 +107,16 @@ def send_to_jdownloader(url, package_name):
         if not device:
             device = jd.get_device(devices[0]["name"])
             
-        print(f"🔌 Verbunden mit JDownloader-Gerät: {device.get_device_data().get('name')}")
-
-        # Übergabe an den Linkgrabber mit der korrekten add_links Methode
+        # Korrekte Methode add_links ohne fehlerhafte Attribut-Abfrage
         device.linkgrabber.add_links([{
             "link": url,
             "packageName": package_name,
             "autostart": False
         }])
-        print(f"📥 Link erfolgreich an JDownloader übergeben: {url} (Paket: {package_name})")
+        print(f"📥 Link erfolgreich an JDownloader übergeben: {url}")
         return True
     except Exception as e:
-        print(f"❌ MyJDownloader Fehler bei der Übergabe: {e}")
+        print(f"❌ MyJDownloader Fehler: {e}")
         return False
 
 def extract_hoster_link(release_page_url):
