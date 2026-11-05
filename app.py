@@ -107,9 +107,9 @@ def send_to_jdownloader(url, package_name):
         if not device:
             device = jd.get_device(devices[0]["name"])
             
-        # WICHTIG: Korrekter Schlüssel "links" im Plural
-        device.linkgrabber.addLinks([{
-            "links": url,
+        # Korrekte myjdapi-Methode: add_links mit "link"
+        device.linkgrabber.add_links([{
+            "link": url,
             "packageName": package_name,
             "autostart": False
         }])
