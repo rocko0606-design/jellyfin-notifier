@@ -118,7 +118,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Lädt die Seite mit Playwright, fängt Netzwerk-Requests ab und klickt Hoster-Buttons automatisch durch"""
+    """Lädt die Seite mit Playwright, klickt Elemente durch und prüft sofort die aktuelle Seiten-URL auf Filer.net"""
     if not release_page_url or "http" not in release_page_url:
         return None
         
@@ -144,27 +144,16 @@ def extract_hoster_link(release_page_url):
                 }])
 
             page = context.new_page()
-            found_target_link = []
-            
-            def handle_request(request):
-                url = request.url
-                if "filer.net" in url or "/go/" in url or "/out/" in url:
-                    print(f"🔍 [Netzwerk-Intercept] URL erkannt: {url}")
-                    if "filer.net" in url:
-                        found_target_link.append(url)
-                    
-            page.on("request", handle_request)
             
             print(f"🌐 Öffne Release-Seite im Browser: {release_page_url}")
             page.goto(release_page_url, timeout=15000)
-            page.wait_for_timeout(3500)
+            page.wait_for_timeout(3000)
             
-            if found_target_link:
-                print(f"🎯 Filer-Link direkt im Netzwerk gefunden: {found_target_link[0]}")
+            if "filer.net" in page.url:
+                print(f"🎯 Filer-Link direkt in URL: {page.url}")
                 browser.close()
-                return found_target_link[0]
+                return page.url
 
-            # Versuche alle potenziellen Button-Elemente anzuklicken
             potential_selectors = [
                 "a[href*='/go/']", 
                 "a[href*='/out/']", 
@@ -172,34 +161,42 @@ def extract_hoster_link(release_page_url):
                 "button", 
                 ".btn", 
                 "tr[data-url]", 
-                "td a"
+                "td a",
+                "span",
+                "div"
             ]
             
             for selector in potential_selectors:
                 elements = page.locator(selector).all()
                 if elements:
-                    print(f"🔎 Selektor '{selector}' lieferte {len(elements)} Elemente. Klicke durch...")
+                    print(f"🔎 Prüfe Selektor '{selector}' ({len(elements)} Elemente)...")
                     for el in elements:
                         try:
                             if el.is_visible():
-                                el.click(timeout=1000)
-                                page.wait_for_timeout(1500)
-                                if found_target_link:
-                                    print(f"✅ Filer-Link nach Klick abgefangen: {found_target_link[0]}")
-                                    browser.close()
-                                    return found_target_link[0]
-                        except Exception as click_err:
+                                text = el.inner_text().lower()
+                                if any(keyword in text for keyword in ['filer', 'download', 'go', 'to', 'ncis', 'episode']) or selector in ["a[href*='/go/']", "a[href*='/out/']"]:
+                                    el.click(timeout=1000)
+                                    page.wait_for_timeout(1500)
+                                    
+                                    current_url = page.url
+                                    print(f"   ↳ Nach Klick aktuelle URL: {current_url}")
+                                    
+                                    if "filer.net" in current_url:
+                                        print(f"✅ Filer-Link durch Weiterleitung erreicht: {current_url}")
+                                        browser.close()
+                                        return current_url
+                                        
+                                    content = page.content()
+                                    filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', content, re.IGNORECASE)
+                                    if filer_match:
+                                        found_url = filer_match.group(0).rstrip('"\'')
+                                        print(f"✅ Filer-Link im DOM nach Klick gefunden: {found_url}")
+                                        browser.close()
+                                        return found_url
+                        except:
                             pass
 
-            content = page.content()
             browser.close()
-            
-            filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', content, re.IGNORECASE)
-            if filer_match:
-                found_url = filer_match.group(0).rstrip('"\'')
-                print(f"🎯 Filer-Link im finalen DOM gefunden: {found_url}")
-                return found_url
-
             print("⚠️ Konnte keinen Filer-Link ermitteln.")
     except Exception as e:
         print(f"❌ Playwright Fehler: {e}")
@@ -419,6 +416,8 @@ HTML_TEMPLATE = """
         .btn-primary:hover { background-color: var(--accent-hover); }
         .btn-check { background-color: #10b981; color: #fff; margin-right: 0.5rem; }
         .btn-check:hover { background-color: #059669; }
+        .btn-test { background-color: #3b82f6; color: #fff; }
+        .btn-test:hover { background-color: #2563eb; }
         .result-item { padding: 1rem; border-radius: 8px; margin-top: 0.75rem; border: 1px solid transparent; }
         .result-item.missing { background-color: var(--missing-bg); border-color: var(--missing-border); color: var(--missing-text); }
         .result-item.success { background-color: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
@@ -460,6 +459,16 @@ HTML_TEMPLATE = """
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                     <div class="form-group">
+                        <label>Pushover App Token</label>
+                        <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+                    </div>
+                    <div class="form-group">
+                        <label>Pushover User Key</label>
+                        <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
                         <label>MyJDownloader E-Mail</label>
                         <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
                     </div>
@@ -476,10 +485,11 @@ HTML_TEMPLATE = """
                     <label>Prüfintervall (in Stunden)</label>
                     <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
                 </div>
-                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem;">
+                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem; flex-wrap: wrap;">
                     <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen</button>
-                    <button type="submit" name="action" value="save" class="btn-primary" style="margin-top:0;">Einstellungen speichern</button>
+                    <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht</button>
                 </div>
+                <button type="submit" name="action" value="save" class="btn-primary">Einstellungen speichern</button>
             </form>
             {% if results %}
                 <div style="margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
@@ -500,7 +510,14 @@ def index():
     config = load_config()
     libraries = get_jellyfin_libraries(config.get("jellyfin_url"), config.get("jellyfin_api_key"))
     status = request.args.get("status")
-    msg = "Einstellungen erfolgreich gespeichert!" if status == "saved" else None
+    if status == "saved":
+        msg = "Einstellungen erfolgreich gespeichert!"
+    elif status == "test_ok":
+        msg = "Test-Nachricht via Pushover erfolgreich gesendet!"
+    elif status == "test_fail":
+        msg = "Pushover Test fehlgeschlagen! Token oder User Key prüfen."
+    else:
+        msg = None
     return render_template_string(HTML_TEMPLATE, config=config, libraries=libraries, msg=msg, results=app.config.get("LAST_RESULTS"))
 
 @app.route("/logo.svg")
@@ -524,7 +541,11 @@ def save():
     }
     save_config(new_config)
     
-    if request.form.get("action") == "run_check":
+    action = request.form.get("action")
+    if action == "test":
+        success = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Notifier!")
+        return redirect(url_for("index", status="test_ok" if success else "test_fail"))
+    elif action == "run_check":
         app.config["LAST_RESULTS"] = perform_check()
         return redirect(url_for("index"))
         
