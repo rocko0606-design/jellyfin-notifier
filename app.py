@@ -88,6 +88,7 @@ def send_to_jdownloader(url, package_name):
         
     try:
         jd = myjdapi.Myjdapi()
+        jd.set_app_key("JellyfinNotifier")
         if not jd.connect(email, password):
             print("❌ MyJDownloader: Verbindung fehlgeschlagen.")
             return False
@@ -106,8 +107,9 @@ def send_to_jdownloader(url, package_name):
         if not device:
             device = jd.get_device(devices[0]["name"])
             
-        device.linkgrabber.add_links([{
-            "link": url,
+        # WICHTIG: Korrekter Schlüssel "links" im Plural
+        device.linkgrabber.addLinks([{
+            "links": url,
             "packageName": package_name,
             "autostart": False
         }])
@@ -168,16 +170,6 @@ def extract_hoster_link(release_page_url):
                     return page.url
 
                 buttons = page.locator("a, button").all()
-                print(f"🔎 Gefundene Elemente auf der Zwischenseite: {len(buttons)}")
-                for btn in buttons:
-                    try:
-                        if btn.is_visible():
-                            txt = btn.inner_text().strip()
-                            hrf = btn.get_attribute("href") or ""
-                            print(f"   -> Element Text: '{txt}' | Href: '{hrf}'")
-                    except:
-                        pass
-
                 for btn in buttons:
                     try:
                         if btn.is_visible():
@@ -347,6 +339,7 @@ def perform_check():
                 if hoster_url:
                     if send_to_jdownloader(hoster_url, f"{matched_show['name']} - {ep_str}"):
                         jd_status = " | 📥 <b>An JDownloader übergeben!</b>"
+                        send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download an JDownloader übergeben.")
                     else:
                         jd_status = " | ⚠️ <i>JDownloader Fehler</i>"
                 else:
@@ -472,6 +465,16 @@ HTML_TEMPLATE = """
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                     <div class="form-group">
+                        <label>Pushover App Token</label>
+                        <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+                    </div>
+                    <div class="form-group">
+                        <label>Pushover User Key</label>
+                        <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
                         <label>MyJDownloader E-Mail</label>
                         <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
                     </div>
@@ -488,10 +491,11 @@ HTML_TEMPLATE = """
                     <label>Prüfintervall (in Stunden)</label>
                     <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
                 </div>
-                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem;">
+                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem; flex-wrap: wrap;">
                     <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen</button>
-                    <button type="submit" name="action" value="save" class="btn-primary" style="margin-top:0;">Einstellungen speichern</button>
+                    <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht</button>
                 </div>
+                <button type="submit" name="action" value="save" class="btn-primary">Einstellungen speichern</button>
             </form>
             {% if results %}
                 <div style="margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
@@ -512,7 +516,14 @@ def index():
     config = load_config()
     libraries = get_jellyfin_libraries(config.get("jellyfin_url"), config.get("jellyfin_api_key"))
     status = request.args.get("status")
-    msg = "Einstellungen erfolgreich gespeichert!" if status == "saved" else None
+    if status == "saved":
+        msg = "Einstellungen erfolgreich gespeichert!"
+    elif status == "test_ok":
+        msg = "Test-Nachricht via Pushover erfolgreich gesendet!"
+    elif status == "test_fail":
+        msg = "Pushover Test fehlgeschlagen! Token oder User Key prüfen."
+    else:
+        msg = None
     return render_template_string(HTML_TEMPLATE, config=config, libraries=libraries, msg=msg, results=app.config.get("LAST_RESULTS"))
 
 @app.route("/logo.svg")
@@ -536,7 +547,11 @@ def save():
     }
     save_config(new_config)
     
-    if request.form.get("action") == "run_check":
+    action = request.form.get("action")
+    if action == "test":
+        success = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Notifier!")
+        return redirect(url_for("index", status="test_ok" if success else "test_fail"))
+    elif action == "run_check":
         app.config["LAST_RESULTS"] = perform_check()
         return redirect(url_for("index"))
         
