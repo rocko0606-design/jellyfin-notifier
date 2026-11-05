@@ -31,6 +31,7 @@ app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
 DB_FILE = "/app/data/download_history.db"  # Lokale SQLite-Datenbank im persistenten Ordner
 TARGET_DIR = "/mnt/downloads/extracted"    # Windows-Freigabe Ordner für fertige Downloads
+PROXY_URL = "http://192.168.0.77:8888"     # Gluetun HTTP-Proxy für Internet-Anfragen
 
 DEFAULT_CONFIG = {
     "jellyfin_url": "http://192.168.0.73:8096",
@@ -101,7 +102,6 @@ def check_folder(show_name, episode_code):
     try:
         for root, dirs, files in os.walk(TARGET_DIR):
             for file in files:
-                # Prüft, ob der Episodencode im Dateinamen vorkommt
                 if episode_code.lower() in file.lower():
                     return True
     except Exception as e:
@@ -174,7 +174,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Öffnet Release-Seite, fischt den /go/-Token-Link heraus und klickt auf der Zwischenseite alle Elemente durch"""
+    """Öffnet Release-Seite über den Gluetun-Proxy, fischt den /go/-Token-Link heraus und klickt auf der Zwischenseite alle Elemente durch"""
     if not release_page_url or "http" not in release_page_url:
         return None
         
@@ -183,7 +183,12 @@ def extract_hoster_link(release_page_url):
     
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            # Playwright so konfigurieren, dass der Traffic über den Gluetun-Proxy läuft
+            browser = p.chromium.launch(
+                headless=True, 
+                args=["--no-sandbox", "--disable-setuid-sandbox"],
+                proxy={"server": PROXY_URL}
+            )
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
@@ -204,7 +209,7 @@ def extract_hoster_link(release_page_url):
             final_filer_link = []
             page.on("request", lambda req: final_filer_link.append(req.url) if "filer.net" in req.url else None)
 
-            print(f"🌐 Öffne Release-Seite: {release_page_url}")
+            print(f"🌐 Öffne Release-Seite über Proxy: {release_page_url}")
             page.goto(release_page_url, timeout=15000)
             page.wait_for_timeout(2000)
             
@@ -362,7 +367,9 @@ def perform_check():
 
     feed_items = []
     try:
-        res = requests.get(rss_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        # RSS-Feed Abruf über den Gluetun-Proxy
+        proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        res = requests.get(rss_url, headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=10)
         if res.status_code == 200:
             root = ET.fromstring(res.content)
             for item in root.findall(".//item"):
@@ -372,8 +379,8 @@ def perform_check():
                 item_link = link_elem.text if link_elem is not None else ""
                 if text_to_check:
                     feed_items.append({"title": text_to_check, "link": item_link})
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ RSS-Abruf über Proxy fehlgeschlagen: {e}")
 
     missing_found = 0
     for entry in feed_items:
@@ -383,10 +390,6 @@ def perform_check():
         if matched_show and ep_codes:
             existing_eps = get_existing_episodes(jellyfin_url, api_key, matched_show["id"])
             
-            # Filterung: 
-            # 1. Noch nicht in Jellyfin
-            # 2. Nicht in lokaler SQLite-Datenbank
-            # 3. Nicht physisch im extracted-Ordner vorhanden
             truly_missing = []
             for ep in ep_codes:
                 if ep in existing_eps:
@@ -414,7 +417,6 @@ def perform_check():
                     if send_to_jdownloader(hoster_url, f"{matched_show['name']} - {ep_str}"):
                         jd_status = " | 📥 <b>An JDownloader übergeben!</b>"
                         send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download an JDownloader übergeben.")
-                        # Nach erfolgreicher Übergabe in die DB eintragen
                         for ep in truly_missing:
                             add_to_db(f"{matched_show['name']} - {ep}")
                     else:
@@ -501,6 +503,8 @@ HTML_TEMPLATE = """
         .btn-check:hover { background-color: #059669; }
         .btn-test { background-color: #3b82f6; color: #fff; }
         .btn-test:hover { background-color: #2563eb; }
+        .btn-danger { background-color: #ef4444; color: #fff; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+        .btn-danger:hover { background-color: #dc2626; }
         .result-item { padding: 1rem; border-radius: 8px; margin-top: 0.75rem; border: 1px solid transparent; }
         .result-item.missing { background-color: var(--missing-bg); border-color: var(--missing-border); color: var(--missing-text); }
         .result-item.success { background-color: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
@@ -576,7 +580,12 @@ HTML_TEMPLATE = """
             </form>
             {% if results %}
                 <div style="margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
-                    <h3>Ergebnis des Abgleichs</h3>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <h3 style="margin: 0;">Ergebnis des Abgleichs</h3>
+                        <form action="/clear_results" method="POST" style="margin: 0;">
+                            <button type="submit" class="btn-danger">Ergebnisse löschen</button>
+                        </form>
+                    </div>
                     {% for r in results %}
                         <div class="result-item {{ r.class }}">{{ r.text|safe }}</div>
                     {% endfor %}
@@ -606,6 +615,11 @@ def index():
 @app.route("/logo.svg")
 def serve_logo():
     return Response(LOGO_SVG, mimetype="image/svg+xml")
+
+@app.route("/clear_results", methods=["POST"])
+def clear_results():
+    app.config["LAST_RESULTS"] = None
+    return redirect(url_for("index"))
 
 @app.route("/save", methods=["POST"])
 def save():
