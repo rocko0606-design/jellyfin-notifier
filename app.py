@@ -25,11 +25,10 @@ import time
 import re
 import requests
 import xml.etree.ElementTree as ET
-from flask import Flask, render_template_string, request, redirect, url_for, Response, jsonify
+from flask import Flask, render_template_string, request, redirect, url_for, Response
 
 app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
-PROCESSED_FILE = "/app/data/processed.json"
 
 DEFAULT_CONFIG = {
     "jellyfin_url": "http://192.168.0.73:8096",
@@ -57,19 +56,6 @@ def load_config():
 def save_config(data):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-
-def load_processed():
-    if os.path.exists(PROCESSED_FILE):
-        try:
-            with open(PROCESSED_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return []
-
-def save_processed(processed_list):
-    with open(PROCESSED_FILE, "w", encoding="utf-8") as f:
-        json.dump(processed_list[-200:], f, indent=4)
 
 def send_pushover(title, message):
     config = load_config()
@@ -132,49 +118,8 @@ def send_to_jdownloader(url, package_name):
         print(f"❌ MyJDownloader Fehler: {e}")
         return False
 
-def is_already_in_jdownloader(package_name):
-    """Prüft per API, ob das Paket bereits in JDownloader gelistet ist"""
-    config = load_config()
-    email = config.get("myjd_email")
-    password = config.get("myjd_password")
-    device_name = config.get("myjd_device_name")
-    
-    if not email or not password:
-        return False
-        
-    try:
-        jd = myjdapi.Myjdapi()
-        jd.set_app_key("JellyfinNotifier")
-        if not jd.connect(email, password):
-            return False
-            
-        devices = jd.list_devices()
-        if not devices:
-            return False
-            
-        device = None
-        if device_name:
-            for d in devices:
-                if d.get("name") == device_name:
-                    device = jd.get_device(d["name"])
-                    break
-        if not device:
-            device = jd.get_device(devices[0]["name"])
-            
-        # Downloads prüfen
-        for pkg in device.downloads.query_packages():
-            if package_name.lower() in pkg.get("name", "").lower():
-                return True
-        # Linkgrabber prüfen
-        for pkg in device.linkgrabber.query_packages():
-            if package_name.lower() in pkg.get("name", "").lower():
-                return True
-    except:
-        pass
-    return False
-
 def extract_hoster_link(release_page_url):
-    """Ultraschnelle Extraktion mit Ressourcen-Blockierung"""
+    """Ultraschnelle Extraktion durch Blockieren von Bildern/Stylesheets und verkürzte Timeouts"""
     if not release_page_url or "http" not in release_page_url:
         return None
         
@@ -200,13 +145,17 @@ def extract_hoster_link(release_page_url):
                 }])
 
             page = context.new_page()
+            
+            # OPTIMIERUNG: Unnötigen Traffic (Bilder, Fonts, Stylesheets) blockieren für maximale Geschwindigkeit
             page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
 
             final_filer_link = []
             page.on("request", lambda req: final_filer_link.append(req.url) if "filer.net" in req.url else None)
 
+            print(f"🌐 Öffne Release-Seite (High-Speed): {release_page_url}")
             page.goto(release_page_url, timeout=8000)
             
+            # Schnelles Warten auf das /go/-Element statt fixer Pausen
             try:
                 go_link = page.locator("a[href*='/go/']").first
                 if go_link.count() > 0:
@@ -214,12 +163,14 @@ def extract_hoster_link(release_page_url):
                     if go_href.startswith("/"):
                         go_href = "https://nox.to" + go_href
                     
+                    print(f"🔗 Öffne Zwischenseite: {go_href}")
                     page.goto(go_href, timeout=8000)
                     
                     if "filer.net" in page.url:
                         browser.close()
                         return page.url
 
+                    # Direkt Buttons/Links auf der Zwischenseite anklicken
                     buttons = page.locator("a, button").all()
                     for btn in buttons:
                         try:
@@ -249,6 +200,8 @@ def extract_hoster_link(release_page_url):
             filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', content, re.IGNORECASE)
             if filer_match:
                 return filer_match.group(0).rstrip('"\'')
+
+            print("⚠️ Konnte keinen Filer-Link ermitteln.")
     except Exception as e:
         print(f"❌ Playwright Fehler: {e}")
         
@@ -351,7 +304,6 @@ def perform_check():
         return [{"text": "⚠️ Keine Serien in der Bibliothek gefunden.", "class": "warning"}]
 
     shows_dict = {normalize_name(show["name"]): show for show in local_shows}
-    processed_links = load_processed()
 
     feed_items = []
     try:
@@ -370,9 +322,6 @@ def perform_check():
 
     missing_found = 0
     for entry in feed_items:
-        if entry["link"] in processed_links:
-            continue
-
         feed_show_name, ep_codes = clean_feed_title(entry["title"])
         matched_show = shows_dict.get(normalize_name(feed_show_name))
         
@@ -381,25 +330,15 @@ def perform_check():
             missing_in_release = [ep for ep in ep_codes if ep not in existing_eps]
             
             if missing_in_release:
-                package_name = f"{matched_show['name']} - {', '.join(missing_in_release)}"
-                
-                # ZUSÄTZLICHER SCHUTZ: Prüfen, ob es bereits in JDownloader aktiv ist
-                if is_already_in_jdownloader(package_name) or is_already_in_jdownloader(matched_show['name']):
-                    print(f"⏩ Überspringe '{package_name}' – ist bereits in JDownloader aktiv/vorhanden.")
-                    continue
-
                 missing_found += 1
                 ep_str = ", ".join(missing_in_release)
                 hoster_url = extract_hoster_link(entry["link"])
                 
                 jd_status = ""
                 if hoster_url:
-                    if send_to_jdownloader(hoster_url, package_name):
+                    if send_to_jdownloader(hoster_url, f"{matched_show['name']} - {ep_str}"):
                         jd_status = " | 📥 <b>An JDownloader übergeben!</b>"
                         send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download an JDownloader übergeben.")
-                        
-                        processed_links.append(entry["link"])
-                        save_processed(processed_links)
                     else:
                         jd_status = " | ⚠️ <i>JDownloader Fehler</i>"
                 else:
@@ -609,7 +548,7 @@ def save():
     
     action = request.form.get("action")
     if action == "test":
-        success = send_pushover("Jelly sol", "Das ist eine Testnachricht!")
+        success = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Notifier!")
         return redirect(url_for("index", status="test_ok" if success else "test_fail"))
     elif action == "run_check":
         app.config["LAST_RESULTS"] = perform_check()
