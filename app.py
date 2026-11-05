@@ -118,7 +118,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Öffnet Release-Seite, fischt den /go/-Token-Link heraus und löst das Ziel auf"""
+    """Öffnet Release-Seite, fischt den /go/-Token-Link heraus und klickt auf der Zwischenseite alle Elemente durch"""
     if not release_page_url or "http" not in release_page_url:
         return None
         
@@ -152,7 +152,6 @@ def extract_hoster_link(release_page_url):
             page.goto(release_page_url, timeout=15000)
             page.wait_for_timeout(2000)
             
-            # Direkter Griff nach dem /go/-Token-Link
             go_link = page.locator("a[href*='/go/']").first
             if go_link.count() > 0:
                 go_href = go_link.get_attribute("href")
@@ -161,27 +160,40 @@ def extract_hoster_link(release_page_url):
                 
                 print(f"🔗 Gefundener Token-Link, öffne Zwischenseite: {go_href}")
                 page.goto(go_href, timeout=15000)
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(2500)
                 
                 if "filer.net" in page.url:
                     print(f"✅ Filer-Link direkt über URL erreicht: {page.url}")
                     browser.close()
                     return page.url
 
-                # Auf der finalen Zwischenseite den Hoster-Button klicken
                 buttons = page.locator("a, button").all()
+                print(f"🔎 Gefundene Elemente auf der Zwischenseite: {len(buttons)}")
                 for btn in buttons:
                     try:
                         if btn.is_visible():
-                            text = btn.inner_text().lower()
-                            href = btn.get_attribute("href") or ""
-                            if "filer" in text or "filer" in href or "download" in text:
-                                btn.click(timeout=1000)
-                                page.wait_for_timeout(2000)
-                                if "filer.net" in page.url:
-                                    print(f"✅ Filer-Link nach Button-Klick erreicht: {page.url}")
-                                    browser.close()
-                                    return page.url
+                            txt = btn.inner_text().strip()
+                            hrf = btn.get_attribute("href") or ""
+                            print(f"   -> Element Text: '{txt}' | Href: '{hrf}'")
+                    except:
+                        pass
+
+                for btn in buttons:
+                    try:
+                        if btn.is_visible():
+                            btn.click(timeout=1000)
+                            page.wait_for_timeout(2000)
+                            
+                            if "filer.net" in page.url:
+                                target = page.url
+                                print(f"✅ Filer-Link erreicht: {target}")
+                                browser.close()
+                                return target
+                            if final_filer_link:
+                                target = final_filer_link[0]
+                                print(f"✅ Filer-Link über Netzwerk abgefangen: {target}")
+                                browser.close()
+                                return target
                     except:
                         pass
 
@@ -190,7 +202,6 @@ def extract_hoster_link(release_page_url):
                 browser.close()
                 return final_filer_link[0]
 
-            # Fallback DOM Check
             content = page.content()
             browser.close()
             filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', content, re.IGNORECASE)
