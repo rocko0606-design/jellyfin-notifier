@@ -76,7 +76,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Hoster-Link via myjdapi an JDownloader (bewährte addLinks Methode)"""
+    """Übermittelt den Hoster-Link via myjdapi an JDownloader mit der korrekten add_links Methode"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -107,9 +107,9 @@ def send_to_jdownloader(url, package_name):
         if not device:
             device = jd.get_device(devices[0]["name"])
             
-        # Bewährte Methode aus der funktionierenden Version
-        device.linkgrabber.addLinks([{
-            "links": url,
+        # Korrekte Methode add_links mit "link"
+        device.linkgrabber.add_links([{
+            "link": url,
             "packageName": package_name,
             "autostart": False
         }])
