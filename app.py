@@ -2,18 +2,20 @@ import os
 import sys
 import subprocess
 
-# Automatischer Selbst-Test & Installation für Bibliotheken
+# Automatischer Selbst-Test & Installation für alle Bibliotheken inklusive Flask
 try:
+    import flask
     import myjdapi
     import Crypto
     from playwright.sync_api import sync_playwright
 except ImportError:
-    print("📦 Installiere benötigte Bibliotheken automatisch...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "myjdapi", "pycryptodome", "playwright"])
+    print("📦 Installiere benötigte Bibliotheken (Flask, Playwright, etc.) automatisch...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "flask", "myjdapi", "pycryptodome", "playwright"])
     try:
         subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
     except:
         pass
+    import flask
     import myjdapi
     from playwright.sync_api import sync_playwright
 
