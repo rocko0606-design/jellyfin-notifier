@@ -2,14 +2,20 @@ import os
 import sys
 import subprocess
 
-# Automatischer Selbst-Test & Installation für MyJDownloader
+# Automatischer Selbst-Test & Installation für Bibliotheken
 try:
     import myjdapi
     import Crypto
+    from playwright.sync_api import sync_playwright
 except ImportError:
-    print("📦 Installiere benötigte JDownloader-Bibliotheken automatisch...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "myjdapi", "pycryptodome"])
+    print("📦 Installiere benötigte Bibliotheken automatisch...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "myjdapi", "pycryptodome", "playwright"])
+    try:
+        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+    except:
+        pass
     import myjdapi
+    from playwright.sync_api import sync_playwright
 
 import json
 import threading
@@ -68,7 +74,6 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Hoster-Link via offizieller myjdapi-Bibliothek an JDownloader"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -80,12 +85,11 @@ def send_to_jdownloader(url, package_name):
     try:
         jd = myjdapi.Myjdapi()
         if not jd.connect(email, password):
-            print("MyJDownloader: Verbindung via myjdapi fehlgeschlagen.")
+            print("MyJDownloader: Verbindung fehlgeschlagen.")
             return False
             
         devices = jd.list_devices()
         if not devices:
-            print("MyJDownloader: Keine Geräte gefunden.")
             return False
             
         device = None
@@ -102,117 +106,108 @@ def send_to_jdownloader(url, package_name):
             "packageName": package_name,
             "autostart": False
         }])
-        print(f"Link erfolgreich an JDownloader übergeben: {url}")
+        print(f"Link an JDownloader übergeben: {url}")
         return True
-        
     except Exception as e:
         print(f"MyJDownloader Fehler: {e}")
         return False
 
 def extract_hoster_link(release_page_url):
-    """Löst die Seite auf und sucht gezielt nach dem finalen Filer-Net-Link oder API-Daten"""
+    """Nutzt Playwright (Headless Browser), um JavaScript auszuführen und den Hoster-Link abzufangen"""
     if not release_page_url or "http" not in release_page_url:
         return None
+        
+    config = load_config()
+    cookie_val = config.get("website_cookie", "").strip()
+    
     try:
-        config = load_config()
-        cookie_val = config.get("website_cookie", "").strip()
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://nox.to/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-        }
-        if cookie_val:
-            if "cf_clearance=" in cookie_val or "=" in cookie_val:
-                headers["Cookie"] = cookie_val
-            else:
-                headers["Cookie"] = f"cf_clearance={cookie_val}"
-
-        print(f"Lade Release-Seite: {release_page_url}")
-        res = requests.get(release_page_url, headers=headers, timeout=10, allow_redirects=True)
-        
-        if res.status_code == 200:
-            html = res.text
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             
-            filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', html, re.IGNORECASE)
+            if cookie_val:
+                cookie_parts = cookie_val.split("=")
+                c_name = cookie_parts[0].strip()
+                c_value = cookie_parts[1].strip() if len(cookie_parts) > 1 else ""
+                context.add_cookies([{
+                    "name": c_name,
+                    "value": c_value,
+                    "domain": ".nox.to",
+                    "path": "/"
+                }])
+
+            page = context.new_page()
+            captured_links = []
+            
+            def handle_request(request):
+                if "filer.net" in request.url or "/go/" in request.url:
+                    captured_links.append(request.url)
+                    
+            page.on("request", handle_request)
+            
+            print(f"Öffne Release-Seite im Browser: {release_page_url}")
+            page.goto(release_page_url, timeout=15000)
+            page.wait_for_timeout(3500)
+            
+            try:
+                button_selectors = ["a[href*='filer.net']", "button:has-text('filer')", ".hoster-btn", "[data-hoster]"]
+                for selector in button_selectors:
+                    if page.locator(selector).count() > 0:
+                        page.locator(selector).first.click()
+                        page.wait_for_timeout(2000)
+                        break
+            except:
+                pass
+
+            for link in captured_links:
+                if "filer.net" in link:
+                    print(f"Filer-Link im Netzwerkverkehr gefunden: {link}")
+                    browser.close()
+                    return link
+
+            content = page.content()
+            browser.close()
+            
+            filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', content, re.IGNORECASE)
             if filer_match:
-                found_url = filer_match.group(0).rstrip('"\'')
-                print(f"Gefundener Filer-Link im Quelltext: {found_url}")
-                return found_url
+                return filer_match.group(0).rstrip('"\'')
 
-            go_matches = re.findall(r'["\'](/go/[a-zA-Z0-9_\-\.]+)["\']', html)
-            if not go_matches:
-                go_matches = re.findall(r'(/go/[a-zA-Z0-9_\-\.]+)', html)
-
-            for go_path in go_matches:
-                go_url = f"https://nox.to{go_path}" if go_path.startswith('/') else go_path
-                print(f"Prüfe Go-Pfad: {go_url}")
-                
-                api_url = go_url if go_url.endswith('/url') else f"{go_url}/url"
-                api_res = requests.get(api_url, headers=headers, timeout=10, allow_redirects=True)
-                
-                try:
-                    data = api_res.json()
-                    target_url = data.get("url")
-                    if target_url and "filer.net" in target_url:
-                        print(f"Filer-Link über API-JSON erhalten: {target_url}")
-                        return target_url
-                except:
-                    pass
-
-                filer_api_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', api_res.text, re.IGNORECASE)
-                if filer_api_match:
-                    found_url = filer_api_match.group(0).rstrip('"\'')
-                    print(f"Gefundener Filer-Link in API-Antwort: {found_url}")
-                    return found_url
-
-        print("⚠️ Konnte keinen Hoster-Link ermitteln.")
     except Exception as e:
-        print(f"Fehler beim Extrahieren: {e}")
+        print(f"Playwright Fehler: {e}")
         
     return None
 
 def get_jellyfin_libraries(jellyfin_url, api_key):
     if not jellyfin_url or not api_key:
         return []
-    
-    headers = {
-        "X-Emby-Token": api_key,
-        "Authorization": f'MediaBrowser Token="{api_key}"'
-    }
+    headers = {"X-Emby-Token": api_key, "Authorization": f'MediaBrowser Token="{api_key}"'}
     try:
         url = f"{jellyfin_url.rstrip('/')}/Library/VirtualFolders"
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             return res.json()
-    except Exception as e:
-        print(f"Fehler beim Laden der Bibliotheken: {e}")
+    except:
+        pass
     return []
 
 def get_library_series_with_ids(jellyfin_url, api_key, library_id):
     if not jellyfin_url or not api_key or not library_id:
         return []
-    
-    headers = {
-        "X-Emby-Token": api_key,
-        "Authorization": f'MediaBrowser Token="{api_key}"'
-    }
+    headers = {"X-Emby-Token": api_key, "Authorization": f'MediaBrowser Token="{api_key}"'}
     try:
         url = f"{jellyfin_url.rstrip('/')}/Items?ParentId={library_id}&includeItemTypes=Series&recursive=true"
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            shows = [{"id": item.get("Id"), "name": item.get("Name")} for item in data.get("Items", []) if item.get("Name")]
-            return shows
-    except Exception as e:
-        print(f"Fehler beim Abrufen der Serien: {e}")
+            return [{"id": item.get("Id"), "name": item.get("Name")} for item in data.get("Items", []) if item.get("Name")]
+    except:
+        pass
     return []
 
 def get_existing_episodes(jellyfin_url, api_key, series_id):
-    headers = {
-        "X-Emby-Token": api_key,
-        "Authorization": f'MediaBrowser Token="{api_key}"'
-    }
+    headers = {"X-Emby-Token": api_key, "Authorization": f'MediaBrowser Token="{api_key}"'}
     try:
         url = f"{jellyfin_url.rstrip('/')}/Shows/{series_id}/Episodes"
         res = requests.get(url, headers=headers, timeout=5)
@@ -223,48 +218,37 @@ def get_existing_episodes(jellyfin_url, api_key, series_id):
                 season = ep.get("ParentIndexNumber")
                 number = ep.get("IndexNumber")
                 runtime = ep.get("RunTimeTicks") or 0
-                
                 if season is not None and number is not None and runtime > 0:
                     existing.add(f"S{season:02d}E{number:02d}")
             return existing
-    except Exception as e:
-        print(f"Fehler beim Abrufen der Episoden für ID {series_id}: {e}")
+    except:
+        pass
     return set()
 
 def normalize_name(name):
     if not name:
         return ""
     n = name.lower().strip()
-    
     if "ncis origins" in n or "ncis: origins" in n:
         n = "navy cis: origins"
     elif n == "ncis":
         n = "navy cis"
-        
     n = re.sub(r'\b(19|20)\d{2}\b', '', n)
     return re.sub(r'[^a-z0-9]', '', n)
 
 def clean_feed_title(raw_title):
-    if "—" in raw_title:
-        base_text = raw_title.split("—")[0].strip()
-    else:
-        base_text = raw_title
-
+    base_text = raw_title.split("—")[0].strip() if "—" in raw_title else raw_title
     multi_match = re.search(r's(\d+)\s*e(\d+)\s*-\s*(?:e)?(\d+)', raw_title, re.IGNORECASE)
-    
     ep_codes = []
     if multi_match:
         season = int(multi_match.group(1))
-        start_ep = int(multi_match.group(2))
-        end_ep = int(multi_match.group(3))
-        for ep_num in range(start_ep, end_ep + 1):
+        for ep_num in range(int(multi_match.group(2)), int(multi_match.group(3)) + 1):
             ep_codes.append(f"S{season:02d}E{ep_num:02d}")
         if "—" not in raw_title:
             base_text = raw_title[:multi_match.start()]
     else:
         match_s = re.search(r's(\d+)\s*e(\d+)', raw_title, re.IGNORECASE)
         match_x = re.search(r'(\d+)x(\d+)', raw_title)
-        
         if match_s:
             ep_codes.append(f"S{int(match_s.group(1)):02d}E{int(match_s.group(2)):02d}")
             if "—" not in raw_title:
@@ -273,12 +257,6 @@ def clean_feed_title(raw_title):
             ep_codes.append(f"S{int(match_x.group(1)):02d}E{int(match_x.group(2)):02d}")
             if "—" not in raw_title:
                 base_text = raw_title[:match_x.start()]
-
-    if not base_text or "http" in base_text or len(base_text) < 2:
-        match_any = re.search(r's\d+e\d+|\d+x\d+', raw_title, re.IGNORECASE)
-        if match_any:
-            base_text = raw_title[:match_any.start()]
-
     clean_name = base_text.replace('.', ' ').replace('_', ' ').strip()
     return clean_name, ep_codes
 
@@ -289,107 +267,75 @@ def perform_check():
     rss_url = config.get("rss_url")
     library_id = config.get("selected_library_id")
     
-    print("Starte präzisen Smart-Abgleich mit JDownloader-Übergabe...")
     results = []
-    
     if not library_id:
-        return [{"text": "⚠️ Keine Jellyfin-Bibliothek ausgewählt. Bitte in den Einstellungen festlegen.", "class": "warning"}]
+        return [{"text": "⚠️ Keine Jellyfin-Bibliothek ausgewählt.", "class": "warning"}]
 
     local_shows = get_library_series_with_ids(jellyfin_url, api_key, library_id)
     if not local_shows:
-        return [{"text": "⚠️ Keine Serien in der ausgewählten Bibliothek gefunden oder Verbindung fehlgeschlagen.", "class": "warning"}]
+        return [{"text": "⚠️ Keine Serien in der Bibliothek gefunden.", "class": "warning"}]
 
-    shows_dict = {}
-    for show in local_shows:
-        norm_key = normalize_name(show["name"])
-        shows_dict[norm_key] = show
+    shows_dict = {normalize_name(show["name"]): show for show in local_shows}
 
     feed_items = []
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(rss_url, headers=headers, timeout=10)
+        res = requests.get(rss_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         if res.status_code == 200:
             root = ET.fromstring(res.content)
             for item in root.findall(".//item"):
                 title_elem = item.find("title")
-                desc_elem = item.find("description")
                 link_elem = item.find("link")
-                
-                text_to_check = ""
-                if title_elem is not None and title_elem.text:
-                    text_to_check = title_elem.text
-                elif desc_elem is not None and desc_elem.text:
-                    text_to_check = desc_elem.text
-                    
+                text_to_check = title_elem.text if title_elem is not None else ""
                 item_link = link_elem.text if link_elem is not None else ""
-                
                 if text_to_check:
                     feed_items.append({"title": text_to_check, "link": item_link})
-        else:
-            return [{"text": f"❌ Fehler beim Laden des RSS-Feeds (Status {res.status_code})", "class": "warning"}]
-    except Exception as e:
-        return [{"text": f"❌ Konnte RSS-Feed nicht verarbeiten: {e}", "class": "warning"}]
+    except:
+        pass
 
     missing_found = 0
     for entry in feed_items:
-        raw_title = entry["title"]
-        item_link = entry["link"]
+        feed_show_name, ep_codes = clean_feed_title(entry["title"])
+        matched_show = shows_dict.get(normalize_name(feed_show_name))
         
-        feed_show_name, ep_codes = clean_feed_title(raw_title)
-        
-        if not ep_codes or not feed_show_name:
-            continue
-            
-        norm_feed_name = normalize_name(feed_show_name)
-        matched_show = shows_dict.get(norm_feed_name)
-                
-        if matched_show:
-            show_name = matched_show["name"]
-            series_id = matched_show["id"]
-            
-            existing_eps = get_existing_episodes(jellyfin_url, api_key, series_id)
+        if matched_show and ep_codes:
+            existing_eps = get_existing_episodes(jellyfin_url, api_key, matched_show["id"])
             missing_in_release = [ep for ep in ep_codes if ep not in existing_eps]
             
             if missing_in_release:
                 missing_found += 1
                 ep_str = ", ".join(missing_in_release)
+                hoster_url = extract_hoster_link(entry["link"])
                 
-                jd_status_text = ""
-                hoster_url = extract_hoster_link(item_link)
+                jd_status = ""
                 if hoster_url:
-                    success = send_to_jdownloader(hoster_url, f"{show_name} - {ep_str}")
-                    if success:
-                        jd_status_text = " | 📥 <b>An JDownloader übergeben!</b>"
+                    if send_to_jdownloader(hoster_url, f"{matched_show['name']} - {ep_str}"):
+                        jd_status = " | 📥 <b>An JDownloader übergeben!</b>"
                     else:
-                        jd_status_text = " | ⚠️ <i>Fehler bei JDownloader-Übergabe</i>"
+                        jd_status = " | ⚠️ <i>JDownloader Fehler</i>"
                 else:
-                    jd_status_text = " | ⚠️ <i>Kein Hoster-Link gefunden</i>"
+                    jd_status = " | ⚠️ <i>Kein Link gefunden</i>"
 
                 results.append({
-                    "text": f"'{show_name}' – Episoden <b>{ep_str}</b> fehlen noch!{jd_status_text}<br><small style='color: #8c9ba5;'>Release: {raw_title}</small>",
+                    "text": f"'{matched_show['name']}' – Episoden <b>{ep_str}</b> fehlen!{jd_status}",
                     "class": "missing"
                 })
-                send_pushover("Fehlende Episode & Download gestartet!", f"Für '{show_name}' ({ep_str}) wurde der Download an JDownloader übergeben.")
+                send_pushover("Download gestartet!", f"Für {matched_show['name']} ({ep_str}) an JDownloader übergeben.")
 
     if missing_found == 0:
-        results.append({"text": "✅ Alle Feed-Einträge geprüft – Deine Serien sind aktuell, keine neuen Lücken gefunden.", "class": "success"})
-        
+        results.append({"text": "✅ Alle Feed-Einträge geprüft – keine Lücken gefunden.", "class": "success"})
     return results
 
 def background_checker():
     while True:
         config = load_config()
-        interval_hours = float(config.get("check_interval_hours", 6))
+        time.sleep(float(config.get("check_interval_hours", 6)) * 3600)
         perform_check()
-        time.sleep(interval_hours * 3600)
 
 threading.Thread(target=background_checker, daemon=True).start()
 
 LOGO_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="112" fill="#0f172a"/>
   <path d="M256 96c-61.85 0-112 50.15-112 112v48.63L106.67 312A32 32 0 00133.33 360h245.34a32 32 0 0026.66-48L368 256.63V208c0-61.85-50.15-112-112-112z" fill="#06b6d4"/>
-  <path d="M224 400a32 32 0 0064 0h-64z" fill="#3b82f6"/>
-  <circle cx="360" cy="152" r="32" fill="#ef4444"/>
 </svg>'''
 
 HTML_TEMPLATE = """
@@ -399,10 +345,7 @@ HTML_TEMPLATE = """
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Jellyfin Notifier</title>
-    <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/svg+xml" href="/logo.svg">
-    <link rel="apple-touch-icon" href="/logo.svg">
-    <meta name="theme-color" content="#0f172a">
     <style>
         :root {
             --bg-color: #0f172a;
@@ -418,13 +361,9 @@ HTML_TEMPLATE = """
             --missing-bg: rgba(194, 65, 12, 0.2);
             --missing-border: #c2410c;
             --missing-text: #fb923c;
-            --warning-bg: rgba(153, 27, 27, 0.2);
-            --warning-border: #991b1b;
-            --warning-text: #f87171;
         }
-
         body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: system-ui, -apple-system, sans-serif;
             background-color: var(--bg-color);
             color: var(--text-main);
             margin: 0;
@@ -432,314 +371,87 @@ HTML_TEMPLATE = """
             display: flex;
             justify-content: center;
         }
-
-        .container {
-            width: 100%;
-            max-width: 850px;
-        }
-
-        header {
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-
-        .logo-img {
-            width: 64px;
-            height: 64px;
-            margin-bottom: 0.75rem;
-            filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));
-        }
-
-        header h1 {
-            font-size: 1.8rem;
-            margin: 0 0 0.3rem 0;
-            color: #fff;
-            letter-spacing: -0.025em;
-        }
-
-        header p {
-            color: var(--text-muted);
-            margin: 0;
-            font-size: 0.95rem;
-        }
-
+        .container { width: 100%; max-width: 850px; }
         .card {
             background-color: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 12px;
             padding: 2rem;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
             margin-bottom: 2rem;
         }
-
-        .alert {
-            padding: 1rem 1.25rem;
-            border-radius: 8px;
-            margin-bottom: 1.5rem;
-            font-size: 0.95rem;
-            font-weight: 500;
-            border: 1px solid transparent;
-        }
-
-        .alert-success {
-            background-color: var(--success-bg);
-            border-color: var(--success-border);
-            color: var(--success-text);
-        }
-
-        .form-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 1.25rem;
-        }
-
-        @media (min-width: 640px) {
-            .form-grid-2 {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 1rem;
-            }
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-        }
-
-        label {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: var(--text-muted);
-            margin-bottom: 0.4rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
+        .form-group { display: flex; flex-direction: column; margin-bottom: 1rem; }
+        label { font-size: 0.875rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.4rem; text-transform: uppercase; }
         input, select {
-            width: 100%;
-            padding: 0.75rem 1rem;
-            background-color: #0f172a;
-            border: 1px solid var(--border-color);
-            color: #fff;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            box-sizing: border-box;
-            transition: border-color 0.2s, box-shadow 0.2s;
+            width: 100%; padding: 0.75rem 1rem; background-color: #0f172a;
+            border: 1px solid var(--border-color); color: #fff; border-radius: 8px; font-size: 0.95rem; box-sizing: border-box;
         }
-
-        input:focus, select:focus {
-            outline: none;
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
-        }
-
-        .section-title {
-            font-size: 1rem;
-            color: var(--accent);
-            margin: 1.5rem 0 0.75rem 0;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 0.25rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        .btn-group {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.75rem;
-            margin-top: 1.5rem;
-        }
-
         button {
-            padding: 0.75rem 1.25rem;
-            font-size: 0.95rem;
-            font-weight: 600;
-            border-radius: 8px;
-            border: none;
-            cursor: pointer;
-            transition: background-color 0.2s, transform 0.1s;
+            padding: 0.75rem 1.25rem; font-size: 0.95rem; font-weight: 600; border-radius: 8px; border: none; cursor: pointer;
         }
-
-        button:active {
-            transform: translateY(1px);
-        }
-
-        .btn-primary {
-            background-color: var(--accent);
-            color: #0f172a;
-            width: 100%;
-            margin-top: 1.5rem;
-        }
-        .btn-primary:hover {
-            background-color: var(--accent-hover);
-        }
-
-        .btn-test {
-            background-color: #3b82f6;
-            color: #fff;
-        }
-        .btn-test:hover { background-color: #2563eb; }
-
-        .btn-check {
-            background-color: #10b981;
-            color: #fff;
-        }
+        .btn-primary { background-color: var(--accent); color: #0f172a; width: 100%; margin-top: 1rem; }
+        .btn-primary:hover { background-color: var(--accent-hover); }
+        .btn-check { background-color: #10b981; color: #fff; margin-right: 0.5rem; }
         .btn-check:hover { background-color: #059669; }
-
-        .btn-clear {
-            background-color: #ef4444;
-            color: #fff;
-            padding: 0.4rem 0.8rem;
-            font-size: 0.85rem;
-        }
-        .btn-clear:hover { background-color: #dc2626; }
-
-        .status-box {
-            margin-top: 2rem;
-            border-top: 1px solid var(--border-color);
-            padding-top: 1.5rem;
-        }
-
-        .header-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-        }
-
-        .header-row h3 {
-            margin: 0;
-            font-size: 1.1rem;
-            color: #fff;
-        }
-
-        .result-item {
-            padding: 1rem 1.25rem;
-            border-radius: 8px;
-            margin-bottom: 0.75rem;
-            font-size: 0.95rem;
-            border: 1px solid transparent;
-            line-height: 1.5;
-        }
-
-        .result-item.missing {
-            background-color: var(--missing-bg);
-            border-color: var(--missing-border);
-            color: var(--missing-text);
-        }
-
-        .result-item.success {
-            background-color: var(--success-bg);
-            border-color: var(--success-border);
-            color: var(--success-text);
-        }
-
-        .result-item.warning {
-            background-color: var(--warning-bg);
-            border-color: var(--warning-border);
-            color: var(--warning-text);
-        }
+        .result-item { padding: 1rem; border-radius: 8px; margin-top: 0.75rem; border: 1px solid transparent; }
+        .result-item.missing { background-color: var(--missing-bg); border-color: var(--missing-border); color: var(--missing-text); }
+        .result-item.success { background-color: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
     </style>
 </head>
 <body>
     <div class="container">
-        <header>
-            <img src="/logo.svg" alt="Logo" class="logo-img">
+        <header style="text-align: center; margin-bottom: 2rem;">
             <h1>Jellyfin Notifier</h1>
-            <p>Automatisierter Smart-Lücken-Detektor & JDownloader-Brücke</p>
+            <p style="color: var(--text-muted);">Smart-Lücken-Detektor & Playwright JDownloader-Brücke</p>
         </header>
-
         <div class="card">
-            {% if msg %}
-                <div class="alert alert-success">{{ msg }}</div>
-            {% endif %}
-            
+            {% if msg %}<div style="padding: 1rem; background: rgba(22,101,52,0.2); border: 1px solid #166534; color: #4ade80; border-radius: 8px; margin-bottom: 1rem;">{{ msg }}</div>{% endif %}
             <form method="POST" action="/save">
-                <div class="form-grid">
-                    <div class="section-title">Jellyfin & RSS</div>
-                    <div class="form-grid-2">
-                        <div class="form-group">
-                            <label>Jellyfin URL</label>
-                            <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
-                        </div>
-                        <div class="form-group">
-                            <label>Jellyfin API-Key</label>
-                            <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>RSS-Feed URL</label>
-                        <input type="text" name="rss_url" value="{{ config.rss_url }}" required>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Zu überwachende Jellyfin-Bibliothek</label>
-                        <select name="selected_library_id">
-                            <option value="">-- Bitte wählen --</option>
-                            {% for lib in libraries %}
-                                <option value="{{ lib.ItemId }}" {% if config.selected_library_id == lib.ItemId %}selected{% endif %}>{{ lib.Name }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-
-                    <div class="section-title">Webseiten-Zugang (für Hoster-Links)</div>
-                    <div class="form-group">
-                        <label>Webseiten-Cookie (Session-Cookie)</label>
-                        <input type="text" name="website_cookie" value="{{ config.website_cookie }}" placeholder="cf_clearance=...">
-                        <small style="color: var(--text-muted); margin-top: 0.3rem;">Dein Cloudflare-Cookie zur Umgehung von Verifizierungen.</small>
-                    </div>
-
-                    <div class="section-title">Benachrichtigungen & Download</div>
-                    <div class="form-grid-2">
-                        <div class="form-group">
-                            <label>Pushover App Token</label>
-                            <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
-                        </div>
-                        <div class="form-group">
-                            <label>Pushover User Key</label>
-                            <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
-                        </div>
-                    </div>
-
-                    <div class="form-grid-2">
-                        <div class="form-group">
-                            <label>MyJDownloader E-Mail</label>
-                            <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
-                        </div>
-                        <div class="form-group">
-                            <label>MyJDownloader Passwort</label>
-                            <input type="password" name="myjd_password" value="{{ config.myjd_password }}">
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>MyJDownloader Gerätename (optional)</label>
-                        <input type="text" name="myjd_device_name" value="{{ config.myjd_device_name }}" placeholder="Leer lassen = nimmt erstes Gerät">
-                    </div>
-
-                    <div class="form-group">
-                        <label>Prüfintervall (in Stunden)</label>
-                        <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
-                    </div>
+                <div class="form-group">
+                    <label>Jellyfin URL</label>
+                    <input type="text" name="jellyfin_url" value="{{ config.jellyfin_url }}" required>
                 </div>
-
-                <div class="btn-group">
-                    <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht</button>
+                <div class="form-group">
+                    <label>Jellyfin API-Key</label>
+                    <input type="text" name="jellyfin_api_key" value="{{ config.jellyfin_api_key }}">
+                </div>
+                <div class="form-group">
+                    <label>RSS-Feed URL</label>
+                    <input type="text" name="rss_url" value="{{ config.rss_url }}" required>
+                </div>
+                <div class="form-group">
+                    <label>Zu überwachende Jellyfin-Bibliothek</label>
+                    <select name="selected_library_id">
+                        <option value="">-- Bitte wählen --</option>
+                        {% for lib in libraries %}
+                            <option value="{{ lib.ItemId }}" {% if config.selected_library_id == lib.ItemId %}selected{% endif %}>{{ lib.Name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Webseiten-Cookie (Session/Cloudflare)</label>
+                    <input type="text" name="website_cookie" value="{{ config.website_cookie }}" placeholder="cf_clearance=...">
+                </div>
+                <div class="form-group">
+                    <label>MyJDownloader E-Mail</label>
+                    <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
+                </div>
+                <div class="form-group">
+                    <label>MyJDownloader Passwort</label>
+                    <input type="password" name="myjd_password" value="{{ config.myjd_password }}">
+                </div>
+                <div class="form-group">
+                    <label>Prüfintervall (in Stunden)</label>
+                    <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
+                </div>
+                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem;">
                     <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen</button>
+                    <button type="submit" name="action" value="save" class="btn-primary" style="margin-top:0;">Einstellungen speichern</button>
                 </div>
-
-                <button type="submit" name="action" value="save" class="btn-primary">Einstellungen speichern</button>
             </form>
-
             {% if results %}
-                <div class="status-box">
-                    <div class="header-row">
-                        <h3>Ergebnis des Abgleichs</h3>
-                        <form method="POST" action="/clear" style="margin: 0;">
-                            <button type="submit" class="btn-clear">Löschen</button>
-                        </form>
-                    </div>
+                <div style="margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+                    <h3>Ergebnis des Abgleichs</h3>
                     {% for r in results %}
                         <div class="result-item {{ r.class }}">{{ r.text|safe }}</div>
                     {% endfor %}
@@ -756,38 +468,12 @@ def index():
     config = load_config()
     libraries = get_jellyfin_libraries(config.get("jellyfin_url"), config.get("jellyfin_api_key"))
     status = request.args.get("status")
-    msg = None
-    if status == "saved":
-        msg = "Einstellungen & Bibliotheken erfolgreich aktualisiert!"
-    elif status == "test_success":
-        msg = "Test-Nachricht wurde erfolgreich via Pushover gesendet!"
-    elif status == "test_failed":
-        msg = "Fehler beim Senden! Bitte Token und User Key überprüfen."
-    
+    msg = "Einstellungen erfolgreich gespeichert!" if status == "saved" else None
     return render_template_string(HTML_TEMPLATE, config=config, libraries=libraries, msg=msg, results=app.config.get("LAST_RESULTS"))
 
 @app.route("/logo.svg")
 def serve_logo():
     return Response(LOGO_SVG, mimetype="image/svg+xml")
-
-@app.route("/manifest.json")
-def serve_manifest():
-    manifest = {
-        "name": "Jellyfin Notifier",
-        "short_name": "Notifier",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#0f172a",
-        "theme_color": "#0f172a",
-        "icons": [
-            {
-                "src": "/logo.svg",
-                "sizes": "any",
-                "type": "image/svg+xml"
-            }
-        ]
-    }
-    return Response(json.dumps(manifest), mimetype="application/json")
 
 @app.route("/save", methods=["POST"])
 def save():
@@ -806,23 +492,11 @@ def save():
     }
     save_config(new_config)
     
-    action_val = request.form.get("action")
-    if action_val == "test":
-        ok = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Jellyfin Notifier!")
-        status = "test_success" if ok else "test_failed"
-        return redirect(url_for("index", status=status))
-        
-    elif action_val == "run_check":
-        results = perform_check()
-        app.config["LAST_RESULTS"] = results
+    if request.form.get("action") == "run_check":
+        app.config["LAST_RESULTS"] = perform_check()
         return redirect(url_for("index"))
         
     return redirect(url_for("index", status="saved"))
-
-@app.route("/clear", methods=["POST"])
-def clear_results():
-    app.config["LAST_RESULTS"] = None
-    return redirect(url_for("index"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
