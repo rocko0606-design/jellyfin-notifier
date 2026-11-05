@@ -76,7 +76,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Hoster-Link via myjdapi an JDownloader"""
+    """Übermittelt den Hoster-Link via myjdapi an JDownloader mit der korrekten add_links Methode"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -107,6 +107,7 @@ def send_to_jdownloader(url, package_name):
         if not device:
             device = jd.get_device(devices[0]["name"])
             
+        # Korrekte Methode add_links mit "link"
         device.linkgrabber.add_links([{
             "link": url,
             "packageName": package_name,
@@ -119,7 +120,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def extract_hoster_link(release_page_url):
-    """Ultraschnelle Extraktion durch Blockieren von Bildern/Stylesheets und verkürzte Timeouts"""
+    """Öffnet Release-Seite, fischt den /go/-Token-Link heraus und klickt auf der Zwischenseite alle Elemente durch"""
     if not release_page_url or "http" not in release_page_url:
         return None
         
@@ -146,52 +147,50 @@ def extract_hoster_link(release_page_url):
 
             page = context.new_page()
             
-            # OPTIMIERUNG: Unnötigen Traffic (Bilder, Fonts, Stylesheets) blockieren für maximale Geschwindigkeit
-            page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
-
             final_filer_link = []
             page.on("request", lambda req: final_filer_link.append(req.url) if "filer.net" in req.url else None)
 
-            print(f"🌐 Öffne Release-Seite (High-Speed): {release_page_url}")
-            page.goto(release_page_url, timeout=8000)
+            print(f"🌐 Öffne Release-Seite: {release_page_url}")
+            page.goto(release_page_url, timeout=15000)
+            page.wait_for_timeout(2000)
             
-            # Schnelles Warten auf das /go/-Element statt fixer Pausen
-            try:
-                go_link = page.locator("a[href*='/go/']").first
-                if go_link.count() > 0:
-                    go_href = go_link.get_attribute("href")
-                    if go_href.startswith("/"):
-                        go_href = "https://nox.to" + go_href
-                    
-                    print(f"🔗 Öffne Zwischenseite: {go_href}")
-                    page.goto(go_href, timeout=8000)
-                    
-                    if "filer.net" in page.url:
-                        browser.close()
-                        return page.url
+            go_link = page.locator("a[href*='/go/']").first
+            if go_link.count() > 0:
+                go_href = go_link.get_attribute("href")
+                if go_href.startswith("/"):
+                    go_href = "https://nox.to" + go_href
+                
+                print(f"🔗 Gefundener Token-Link, öffne Zwischenseite: {go_href}")
+                page.goto(go_href, timeout=15000)
+                page.wait_for_timeout(2500)
+                
+                if "filer.net" in page.url:
+                    print(f"✅ Filer-Link direkt über URL erreicht: {page.url}")
+                    browser.close()
+                    return page.url
 
-                    # Direkt Buttons/Links auf der Zwischenseite anklicken
-                    buttons = page.locator("a, button").all()
-                    for btn in buttons:
-                        try:
-                            if btn.is_visible():
-                                btn.click(timeout=500)
-                                page.wait_for_timeout(500)
-                                
-                                if "filer.net" in page.url:
-                                    target = page.url
-                                    browser.close()
-                                    return target
-                                if final_filer_link:
-                                    target = final_filer_link[0]
-                                    browser.close()
-                                    return target
-                        except:
-                            pass
-            except Exception as inner_e:
-                print(f"⚠️ Detail-Fehler bei Extraktion: {inner_e}")
+                buttons = page.locator("a, button").all()
+                for btn in buttons:
+                    try:
+                        if btn.is_visible():
+                            btn.click(timeout=1000)
+                            page.wait_for_timeout(2000)
+                            
+                            if "filer.net" in page.url:
+                                target = page.url
+                                print(f"✅ Filer-Link erreicht: {target}")
+                                browser.close()
+                                return target
+                            if final_filer_link:
+                                target = final_filer_link[0]
+                                print(f"✅ Filer-Link über Netzwerk abgefangen: {target}")
+                                browser.close()
+                                return target
+                    except:
+                        pass
 
             if final_filer_link:
+                print(f"✅ Filer-Link über Netzwerk abgefangen: {final_filer_link[0]}")
                 browser.close()
                 return final_filer_link[0]
 
@@ -199,7 +198,9 @@ def extract_hoster_link(release_page_url):
             browser.close()
             filer_match = re.search(r'https?://[^\s<>"]+filer\.net/(?:folder|f)/[a-zA-Z0-9]+', content, re.IGNORECASE)
             if filer_match:
-                return filer_match.group(0).rstrip('"\'')
+                found_url = filer_match.group(0).rstrip('"\'')
+                print(f"✅ Filer-Link im DOM gefunden: {found_url}")
+                return found_url
 
             print("⚠️ Konnte keinen Filer-Link ermitteln.")
     except Exception as e:
