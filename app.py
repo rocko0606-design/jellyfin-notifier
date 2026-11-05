@@ -2,7 +2,7 @@ import os
 import sys
 import subprocess
 
-# Automatischer Selbst-Test & Installation für alle Bibliotheken inklusive Flask
+# Automatischer Selbst-Test & Installation für benötigte Bibliotheken
 try:
     import flask
     import myjdapi
@@ -76,6 +76,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
+    """Übermittelt den Hoster-Link via offizieller myjdapi-Bibliothek an JDownloader"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -92,6 +93,7 @@ def send_to_jdownloader(url, package_name):
             
         devices = jd.list_devices()
         if not devices:
+            print("MyJDownloader: Keine Geräte gefunden.")
             return False
             
         device = None
@@ -108,14 +110,14 @@ def send_to_jdownloader(url, package_name):
             "packageName": package_name,
             "autostart": False
         }])
-        print(f"Link an JDownloader übergeben: {url}")
+        print(f"Link erfolgreich an JDownloader übergeben: {url}")
         return True
     except Exception as e:
         print(f"MyJDownloader Fehler: {e}")
         return False
 
 def extract_hoster_link(release_page_url):
-    """Nutzt Playwright (Headless Browser), um JavaScript auszuführen und den Hoster-Link abzufangen"""
+    """Lädt die Seite mit Playwright, fängt Netzwerk-Requests ab und klickt Hoster-Buttons automatisch durch"""
     if not release_page_url or "http" not in release_page_url:
         return None
         
@@ -141,33 +143,48 @@ def extract_hoster_link(release_page_url):
                 }])
 
             page = context.new_page()
-            captured_links = []
+            found_target_link = []
             
             def handle_request(request):
-                if "filer.net" in request.url or "/go/" in request.url:
-                    captured_links.append(request.url)
+                url = request.url
+                if "filer.net" in url or "/go/" in url or "/out/" in url:
+                    if "filer.net" in url:
+                        found_target_link.append(url)
                     
             page.on("request", handle_request)
             
             print(f"Öffne Release-Seite im Browser: {release_page_url}")
             page.goto(release_page_url, timeout=15000)
-            page.wait_for_timeout(3500)
+            page.wait_for_timeout(3000)
             
-            try:
-                button_selectors = ["a[href*='filer.net']", "button:has-text('filer')", ".hoster-btn", "[data-hoster]"]
-                for selector in button_selectors:
-                    if page.locator(selector).count() > 0:
-                        page.locator(selector).first.click()
-                        page.wait_for_timeout(2000)
-                        break
-            except:
-                pass
+            if found_target_link:
+                browser.close()
+                return found_target_link[0]
 
-            for link in captured_links:
-                if "filer.net" in link:
-                    print(f"Filer-Link im Netzwerkverkehr gefunden: {link}")
-                    browser.close()
-                    return link
+            # Klicke potenzielle Button-Elemente durch
+            potential_selectors = [
+                "a[href*='/go/']", 
+                "a[href*='/out/']", 
+                "a[href*='filer.net']", 
+                "button", 
+                ".btn", 
+                "tr[data-url]", 
+                "td a"
+            ]
+            
+            for selector in potential_selectors:
+                elements = page.locator(selector).all()
+                if elements:
+                    for el in elements:
+                        try:
+                            if el.is_visible():
+                                el.click(timeout=1000)
+                                page.wait_for_timeout(1500)
+                                if found_target_link:
+                                    browser.close()
+                                    return found_target_link[0]
+                        except:
+                            pass
 
             content = page.content()
             browser.close()
@@ -318,10 +335,10 @@ def perform_check():
                     jd_status = " | ⚠️ <i>Kein Link gefunden</i>"
 
                 results.append({
-                    "text": f"'{matched_show['name']}' – Episoden <b>{ep_str}</b> fehlen!{jd_status}",
+                    "text": f"'{matched_show['name']}' – Episoden <b>{ep_str}</b> fehlen!{jd_status}<br><small style='color: #8c9ba5;'>Release: {entry['title']}</small>",
                     "class": "missing"
                 })
-                send_pushover("Download gestartet!", f"Für {matched_show['name']} ({ep_str}) an JDownloader übergeben.")
+                send_pushover("Fehlende Episode & Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download an JDownloader übergeben.")
 
     if missing_found == 0:
         results.append({"text": "✅ Alle Feed-Einträge geprüft – keine Lücken gefunden.", "class": "success"})
@@ -395,6 +412,8 @@ HTML_TEMPLATE = """
         .btn-primary:hover { background-color: var(--accent-hover); }
         .btn-check { background-color: #10b981; color: #fff; margin-right: 0.5rem; }
         .btn-check:hover { background-color: #059669; }
+        .btn-test { background-color: #3b82f6; color: #fff; }
+        .btn-test:hover { background-color: #2563eb; }
         .result-item { padding: 1rem; border-radius: 8px; margin-top: 0.75rem; border: 1px solid transparent; }
         .result-item.missing { background-color: var(--missing-bg); border-color: var(--missing-border); color: var(--missing-text); }
         .result-item.success { background-color: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
@@ -434,22 +453,39 @@ HTML_TEMPLATE = """
                     <label>Webseiten-Cookie (Session/Cloudflare)</label>
                     <input type="text" name="website_cookie" value="{{ config.website_cookie }}" placeholder="cf_clearance=...">
                 </div>
-                <div class="form-group">
-                    <label>MyJDownloader E-Mail</label>
-                    <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label>Pushover App Token</label>
+                        <input type="text" name="pushover_token" value="{{ config.pushover_token }}">
+                    </div>
+                    <div class="form-group">
+                        <label>Pushover User Key</label>
+                        <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label>MyJDownloader E-Mail</label>
+                        <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
+                    </div>
+                    <div class="form-group">
+                        <label>MyJDownloader Passwort</label>
+                        <input type="password" name="myjd_password" value="{{ config.myjd_password }}">
+                    </div>
                 </div>
                 <div class="form-group">
-                    <label>MyJDownloader Passwort</label>
-                    <input type="password" name="myjd_password" value="{{ config.myjd_password }}">
+                    <label>MyJDownloader Gerätename (optional)</label>
+                    <input type="text" name="myjd_device_name" value="{{ config.myjd_device_name }}" placeholder="Leer lassen = erstes Gerät">
                 </div>
                 <div class="form-group">
                     <label>Prüfintervall (in Stunden)</label>
                     <input type="number" step="0.1" name="check_interval_hours" value="{{ config.check_interval_hours }}" required>
                 </div>
-                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem;">
+                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem; flex-wrap: wrap;">
                     <button type="submit" name="action" value="run_check" class="btn-check">Jetzt prüfen</button>
-                    <button type="submit" name="action" value="save" class="btn-primary" style="margin-top:0;">Einstellungen speichern</button>
+                    <button type="submit" name="action" value="test" class="btn-test">Test-Nachricht</button>
                 </div>
+                <button type="submit" name="action" value="save" class="btn-primary">Einstellungen speichern</button>
             </form>
             {% if results %}
                 <div style="margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
@@ -470,7 +506,14 @@ def index():
     config = load_config()
     libraries = get_jellyfin_libraries(config.get("jellyfin_url"), config.get("jellyfin_api_key"))
     status = request.args.get("status")
-    msg = "Einstellungen erfolgreich gespeichert!" if status == "saved" else None
+    if status == "saved":
+        msg = "Einstellungen erfolgreich gespeichert!"
+    elif status == "test_ok":
+        msg = "Test-Nachricht via Pushover erfolgreich gesendet!"
+    elif status == "test_fail":
+        msg = "Pushover Test fehlgeschlagen! Token oder User Key prüfen."
+    else:
+        msg = None
     return render_template_string(HTML_TEMPLATE, config=config, libraries=libraries, msg=msg, results=app.config.get("LAST_RESULTS"))
 
 @app.route("/logo.svg")
@@ -494,7 +537,11 @@ def save():
     }
     save_config(new_config)
     
-    if request.form.get("action") == "run_check":
+    action = request.form.get("action")
+    if action == "test":
+        success = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Notifier!")
+        return redirect(url_for("index", status="test_ok" if success else "test_fail"))
+    elif action == "run_check":
         app.config["LAST_RESULTS"] = perform_check()
         return redirect(url_for("index"))
         
