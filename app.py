@@ -25,7 +25,7 @@ except ImportError:
         pass
     import flask
     import myjdapi
-    import from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
@@ -101,7 +101,7 @@ def check_folder(show_name, episode_code):
     try:
         for root, dirs, files in os.walk(TARGET_DIR):
             for file in files:
-                # Prüft, ob sowohl der Serienname (oder Teile davon) als auch der Episodencode (z.B. S01E02) im Dateinamen vorkommen
+                # Prüft, ob der Episodencode im Dateinamen vorkommt
                 if episode_code.lower() in file.lower():
                     return True
     except Exception as e:
