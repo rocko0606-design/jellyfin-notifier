@@ -133,7 +133,7 @@ def send_to_jdownloader(url, package_name):
         return False
 
 def is_already_in_jdownloader(package_name):
-    """Prüft per API, ob das Paket bereits in JDownloader (Downloads oder Linkgrabber) liegt"""
+    """Prüft per API, ob das Paket bereits in JDownloader gelistet ist"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -174,7 +174,7 @@ def is_already_in_jdownloader(package_name):
     return False
 
 def extract_hoster_link(release_page_url):
-    """Ultraschnelle Extraktion mit blockierten Ressourcen"""
+    """Ultraschnelle Extraktion mit Ressourcen-Blockierung"""
     if not release_page_url or "http" not in release_page_url:
         return None
         
@@ -383,8 +383,9 @@ def perform_check():
             if missing_in_release:
                 package_name = f"{matched_show['name']} - {', '.join(missing_in_release)}"
                 
+                # ZUSÄTZLICHER SCHUTZ: Prüfen, ob es bereits in JDownloader aktiv ist
                 if is_already_in_jdownloader(package_name) or is_already_in_jdownloader(matched_show['name']):
-                    print(f"⏩ Überspringe '{package_name}' – ist bereits in JDownloader vorhanden.")
+                    print(f"⏩ Überspringe '{package_name}' – ist bereits in JDownloader aktiv/vorhanden.")
                     continue
 
                 missing_found += 1
@@ -608,7 +609,7 @@ def save():
     
     action = request.form.get("action")
     if action == "test":
-        success = send_pushover("Jellyfin Test", "Das ist eine Testnachricht von deinem Notifier!")
+        success = send_pushover("Jelly sol", "Das ist eine Testnachricht!")
         return redirect(url_for("index", status="test_ok" if success else "test_fail"))
     elif action == "run_check":
         app.config["LAST_RESULTS"] = perform_check()
