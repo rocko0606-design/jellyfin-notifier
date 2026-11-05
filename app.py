@@ -1,6 +1,14 @@
 import os
 import sys
 import subprocess
+import json
+import threading
+import time
+import re
+import requests
+import sqlite3
+import xml.etree.ElementTree as ET
+from flask import Flask, render_template_string, request, redirect, url_for, Response
 
 # Automatischer Selbst-Test & Installation für benötigte Bibliotheken
 try:
@@ -17,18 +25,12 @@ except ImportError:
         pass
     import flask
     import myjdapi
-    from playwright.sync_api import sync_playwright
-
-import json
-import threading
-import time
-import re
-import requests
-import xml.etree.ElementTree as ET
-from flask import Flask, render_template_string, request, redirect, url_for, Response
+    import from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
 CONFIG_FILE = "/app/data/config.json"
+DB_FILE = "/app/data/download_history.db"  # Lokale SQLite-Datenbank im persistenten Ordner
+TARGET_DIR = "/mnt/downloads/extracted"    # Windows-Freigabe Ordner für fertige Downloads
 
 DEFAULT_CONFIG = {
     "jellyfin_url": "http://192.168.0.73:8096",
@@ -56,6 +58,58 @@ def load_config():
 def save_config(data):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
+# --- Datenbank- und Ordner-Prüflogik ---
+def init_db():
+    """Initialisiert die lokale SQLite-Datenbank."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS history (episode_key TEXT PRIMARY KEY)''')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ DB-Fehler bei Initialisierung: {e}")
+
+def is_in_db(episode_key):
+    """Prüft, ob die Episode bereits in der lokalen Datenbank steht."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM history WHERE episode_key = ?', (episode_key,))
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+    except:
+        return False
+
+def add_to_db(episode_key):
+    """Fügt eine verarbeitete Episode der lokalen Datenbank hinzu."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('INSERT OR IGNORE INTO history (episode_key) VALUES (?)', (episode_key,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ DB-Fehler beim Hinzufügen: {e}")
+
+def check_folder(show_name, episode_code):
+    """Durchsucht den extracted-Ordner auf der Windows-Freigabe nach der Datei."""
+    if not os.path.exists(TARGET_DIR):
+        return False
+    try:
+        for root, dirs, files in os.walk(TARGET_DIR):
+            for file in files:
+                # Prüft, ob sowohl der Serienname (oder Teile davon) als auch der Episodencode (z.B. S01E02) im Dateinamen vorkommen
+                if episode_code.lower() in file.lower():
+                    return True
+    except Exception as e:
+        print(f"⚠️ Fehler beim Durchsuchen des Ordners: {e}")
+    return False
+
+# Initialisiere die DB beim Start
+init_db()
 
 def send_pushover(title, message):
     config = load_config()
@@ -87,6 +141,7 @@ def send_to_jdownloader(url, package_name):
         return False
         
     try:
+        import myjdapi
         jd = myjdapi.Myjdapi()
         jd.set_app_key("JellyfinNotifier")
         if not jd.connect(email, password):
@@ -107,7 +162,6 @@ def send_to_jdownloader(url, package_name):
         if not device:
             device = jd.get_device(devices[0]["name"])
             
-        # Korrekte Methode add_links ohne fehlerhafte Attribut-Abfrage
         device.linkgrabber.add_links([{
             "link": url,
             "packageName": package_name,
@@ -328,11 +382,31 @@ def perform_check():
         
         if matched_show and ep_codes:
             existing_eps = get_existing_episodes(jellyfin_url, api_key, matched_show["id"])
-            missing_in_release = [ep for ep in ep_codes if ep not in existing_eps]
             
-            if missing_in_release:
+            # Filterung: 
+            # 1. Noch nicht in Jellyfin
+            # 2. Nicht in lokaler SQLite-Datenbank
+            # 3. Nicht physisch im extracted-Ordner vorhanden
+            truly_missing = []
+            for ep in ep_codes:
+                if ep in existing_eps:
+                    continue
+                
+                db_key = f"{matched_show['name']} - {ep}"
+                if is_in_db(db_key):
+                    print(f"[{db_key}] Bereits in lokaler Datenbank erfasst. Überspringe.")
+                    continue
+                
+                if check_folder(matched_show['name'], ep):
+                    print(f"[{db_key}] Im extracted-Ordner gefunden. Trage in DB ein und überspringe.")
+                    add_to_db(db_key)
+                    continue
+                
+                truly_missing.append(ep)
+            
+            if truly_missing:
                 missing_found += 1
-                ep_str = ", ".join(missing_in_release)
+                ep_str = ", ".join(truly_missing)
                 hoster_url = extract_hoster_link(entry["link"])
                 
                 jd_status = ""
@@ -340,6 +414,9 @@ def perform_check():
                     if send_to_jdownloader(hoster_url, f"{matched_show['name']} - {ep_str}"):
                         jd_status = " | 📥 <b>An JDownloader übergeben!</b>"
                         send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download an JDownloader übergeben.")
+                        # Nach erfolgreicher Übergabe in die DB eintragen
+                        for ep in truly_missing:
+                            add_to_db(f"{matched_show['name']} - {ep}")
                     else:
                         jd_status = " | ⚠️ <i>JDownloader Fehler</i>"
                 else:
@@ -351,7 +428,7 @@ def perform_check():
                 })
 
     if missing_found == 0:
-        results.append({"text": "✅ Alle Feed-Einträge geprüft – keine Lücken gefunden.", "class": "success"})
+        results.append({"text": "✅ Alle Feed-Einträge geprüft – keine Lücken gefunden (oder bereits lokal/im Ordner vorhanden).", "class": "success"})
     return results
 
 def background_checker():
@@ -373,7 +450,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Jellyfin Notifier</title>
+    <title>🔔 Jellyfin Notifier</title>
     <link rel="icon" type="image/svg+xml" href="/logo.svg">
     <style>
         :root {
@@ -432,7 +509,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <header style="text-align: center; margin-bottom: 2rem;">
-            <h1>Jellyfin Notifier</h1>
+            <h1>🔔 Jellyfin Notifier</h1>
             <p style="color: var(--text-muted);">Smart-Lücken-Detektor & Playwright JDownloader-Brücke</p>
         </header>
         <div class="card">
