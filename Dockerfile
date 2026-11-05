@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Notwendige System-Bibliotheken für Chromium installieren
+# System-Abhängigkeiten für Chromium und Playwright installieren
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libnspr4 \
@@ -18,12 +18,15 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libasound2 \
+    libxkbcommon0 \
+    libx11-xcb1 \
+    libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . /app
 
-RUN pip install --no-cache-dir requests myjdapi pycryptodome playwright
+RUN pip install --no-cache-dir flask requests myjdapi pycryptodome playwright
 RUN playwright install chromium
 
 EXPOSE 5000
