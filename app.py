@@ -13,18 +13,16 @@ from flask import Flask, render_template_string, request, redirect, url_for, Res
 # Automatischer Selbst-Test & Installation für benötigte Bibliotheken
 try:
     import flask
-    import myjdapi
     import Crypto
     from playwright.sync_api import sync_playwright
 except ImportError:
     print("📦 Installiere benötigte Bibliotheken (Flask, Playwright, etc.) automatisch...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "flask", "myjdapi", "pycryptodome", "playwright"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "flask", "pycryptodome", "playwright"])
     try:
         subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
     except:
         pass
     import flask
-    import myjdapi
     from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
@@ -32,15 +30,13 @@ CONFIG_FILE = "/app/data/config.json"
 DB_FILE = "/app/data/download_history.db"  # Lokale SQLite-Datenbank im persistenten Ordner
 TARGET_DIR = "/mnt/downloads/extracted"    # Windows-Freigabe Ordner für fertige Downloads
 PROXY_URL = "http://192.168.0.77:8888"     # Gluetun HTTP-Proxy für Internet-Anfragen
+FOLDERWATCH_DIR = "/var/lib/docker/volumes/jdownloader_jdow_config_data/_data/folderwatch" # Direkter Pfad zum FolderWatch-Ordner
 
 DEFAULT_CONFIG = {
     "jellyfin_url": "http://192.168.0.73:8096",
     "jellyfin_api_key": "",
     "pushover_token": "",
     "pushover_user": "",
-    "myjd_email": "",
-    "myjd_password": "",
-    "myjd_device_name": "",
     "website_cookie": "",
     "check_interval_hours": 6,
     "rss_url": "https://nox.to/releases?type=series",
@@ -130,55 +126,30 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Hoster-Link via myjdapi an JDownloader und weckt den Client sofort auf"""
-    config = load_config()
-    email = config.get("myjd_email")
-    password = config.get("myjd_password")
-    device_name = config.get("myjd_device_name")
-    
-    if not email or not password or not url:
-        print("⚠️ MyJDownloader: E-Mail, Passwort oder URL fehlt.")
+    """Schreibt den Hoster-Link direkt als .crawljob-Datei in den FolderWatch-Ordner von JDownloader"""
+    if not url:
+        print("⚠️ JDownloader: Keine URL übergeben.")
         return False
         
     try:
-        import myjdapi
-        jd = myjdapi.Myjdapi()
-        jd.set_app_key("JellyfinNotifier")
-        if not jd.connect(email, password):
-            print("❌ MyJDownloader: Verbindung fehlgeschlagen.")
-            return False
-            
-        devices = jd.list_devices()
-        if not devices:
-            print("❌ MyJDownloader: Keine Geräte gefunden.")
-            return False
-            
-        device = None
-        if device_name:
-            for d in devices:
-                if d.get("name") == device_name:
-                    device = jd.get_device(d["name"])
-                    break
-        if not device:
-            device = jd.get_device(devices[0]["name"])
-            
-        device.linkgrabber.add_links([{
-            "link": url,
-            "packageName": package_name,
-            "autostart": False
-        }])
+        # Sicherstellen, dass der Ordner existiert
+        os.makedirs(FOLDERWATCH_DIR, exist_ok=True)
         
-        # Sofortiges Aufwecken / Aktualisieren erzwingen
-        try:
-            if hasattr(device, "wrench") and hasattr(device.wrench, "request_update"):
-                device.wrench.request_update()
-        except:
-            pass
-
-        print(f"📥 Link erfolgreich an JDownloader übergeben & Weckruf gesendet: {url}")
+        # Eindeutigen Dateinamen über einen Zeitstempel generieren
+        filename = f"release_{int(time.time())}.crawljob"
+        file_path = os.path.join(FOLDERWATCH_DIR, filename)
+        
+        # Inhalt im .crawljob-Format definieren (inkl. Paketnamen und Autostart)
+        content = f"text={url}\npackageName={package_name}\nautoStart=TRUE\n"
+        
+        # Datei in den Ordner schreiben
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+            
+        print(f"📥 Link erfolgreich an FolderWatch übergeben: {file_path}")
         return True
     except Exception as e:
-        print(f"❌ MyJDownloader Fehler: {e}")
+        print(f"❌ FolderWatch Fehler: {e}")
         return False
 
 def extract_hoster_link(release_page_url):
@@ -421,12 +392,12 @@ def perform_check():
                 jd_status = ""
                 if hoster_url:
                     if send_to_jdownloader(hoster_url, f"{matched_show['name']} - {ep_str}"):
-                        jd_status = " | 📥 <b>An JDownloader übergeben!</b>"
-                        send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download an JDownloader übergeben.")
+                        jd_status = " | 📥 <b>An JDownloader (FolderWatch) übergeben!</b>"
+                        send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download per FolderWatch an JDownloader übergeben.")
                         for ep in truly_missing:
                             add_to_db(f"{matched_show['name']} - {ep}")
                     else:
-                        jd_status = " | ⚠️ <i>JDownloader Fehler</i>"
+                        jd_status = " | ⚠️ <i>FolderWatch Fehler</i>"
                 else:
                     jd_status = " | ⚠️ <i>Kein Link gefunden</i>"
 
@@ -520,7 +491,7 @@ HTML_TEMPLATE = """
     <div class="container">
         <header style="text-align: center; margin-bottom: 2rem;">
             <h1>🔔 Jellyfin Notifier</h1>
-            <p style="color: var(--text-muted);">Smart-Lücken-Detektor & Playwright JDownloader-Brücke</p>
+            <p style="color: var(--text-muted);">Smart-Lücken-Detektor & Playwright FolderWatch-Brücke</p>
         </header>
         <div class="card">
             {% if msg %}<div style="padding: 1rem; background: rgba(22,101,52,0.2); border: 1px solid #166534; color: #4ade80; border-radius: 8px; margin-bottom: 1rem;">{{ msg }}</div>{% endif %}
@@ -559,20 +530,6 @@ HTML_TEMPLATE = """
                         <label>Pushover User Key</label>
                         <input type="text" name="pushover_user" value="{{ config.pushover_user }}">
                     </div>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                    <div class="form-group">
-                        <label>MyJDownloader E-Mail</label>
-                        <input type="email" name="myjd_email" value="{{ config.myjd_email }}">
-                    </div>
-                    <div class="form-group">
-                        <label>MyJDownloader Passwort</label>
-                        <input type="password" name="myjd_password" value="{{ config.myjd_password }}">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>MyJDownloader Gerätename (optional)</label>
-                    <input type="text" name="myjd_device_name" value="{{ config.myjd_device_name }}" placeholder="Leer lassen = erstes Gerät">
                 </div>
                 <div class="form-group">
                     <label>Prüfintervall (in Stunden)</label>
@@ -634,9 +591,6 @@ def save():
         "jellyfin_api_key": request.form.get("jellyfin_api_key"),
         "pushover_token": request.form.get("pushover_token"),
         "pushover_user": request.form.get("pushover_user"),
-        "myjd_email": request.form.get("myjd_email"),
-        "myjd_password": request.form.get("myjd_password"),
-        "myjd_device_name": request.form.get("myjd_device_name"),
         "website_cookie": request.form.get("website_cookie"),
         "rss_url": request.form.get("rss_url"),
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
