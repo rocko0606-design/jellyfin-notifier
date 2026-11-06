@@ -130,7 +130,7 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Übermittelt den Hoster-Link via myjdapi an JDownloader"""
+    """Übermittelt den Hoster-Link via myjdapi an JDownloader und weckt den Client sofort auf"""
     config = load_config()
     email = config.get("myjd_email")
     password = config.get("myjd_password")
@@ -167,7 +167,15 @@ def send_to_jdownloader(url, package_name):
             "packageName": package_name,
             "autostart": False
         }])
-        print(f"📥 Link erfolgreich an JDownloader übergeben: {url}")
+        
+        # Sofortiges Aufwecken / Aktualisieren erzwingen
+        try:
+            if hasattr(device, "wrench") and hasattr(device.wrench, "request_update"):
+                device.wrench.request_update()
+        except:
+            pass
+
+        print(f"📥 Link erfolgreich an JDownloader übergeben & Weckruf gesendet: {url}")
         return True
     except Exception as e:
         print(f"❌ MyJDownloader Fehler: {e}")
@@ -183,7 +191,6 @@ def extract_hoster_link(release_page_url):
     
     try:
         with sync_playwright() as p:
-            # Playwright so konfigurieren, dass der Traffic über den Gluetun-Proxy läuft
             browser = p.chromium.launch(
                 headless=True, 
                 args=["--no-sandbox", "--disable-setuid-sandbox"],
@@ -367,7 +374,6 @@ def perform_check():
 
     feed_items = []
     try:
-        # RSS-Feed Abruf über den Gluetun-Proxy
         proxies = {"http": PROXY_URL, "https": PROXY_URL}
         res = requests.get(rss_url, headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=10)
         if res.status_code == 200:
