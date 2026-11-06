@@ -30,7 +30,6 @@ CONFIG_FILE = "/app/data/config.json"
 DB_FILE = "/app/data/download_history.db"  # Lokale SQLite-Datenbank im persistenten Ordner
 TARGET_DIR = "/mnt/downloads/extracted"    # Windows-Freigabe Ordner für fertige Downloads
 PROXY_URL = "http://192.168.0.77:8888"     # Gluetun HTTP-Proxy für Internet-Anfragen
-FOLDERWATCH_DIR = "/jdownloader_config/folderwatch"
 
 DEFAULT_CONFIG = {
     "jellyfin_url": "http://192.168.0.73:8096",
@@ -40,7 +39,10 @@ DEFAULT_CONFIG = {
     "website_cookie": "",
     "check_interval_hours": 6,
     "rss_url": "https://nox.to/releases?type=series",
-    "selected_library_id": ""
+    "selected_library_id": "",
+    "myjd_email": "",
+    "myjd_password": "",
+    "myjd_devicename": ""
 }
 
 def load_config():
@@ -126,30 +128,87 @@ def send_pushover(title, message):
         return False
 
 def send_to_jdownloader(url, package_name):
-    """Schreibt den Hoster-Link direkt als .crawljob-Datei in den FolderWatch-Ordner von JDownloader"""
+    """Sendet den Link über die MyJDownloader API direkt an JDownloader"""
     if not url:
         print("⚠️ JDownloader: Keine URL übergeben.")
         return False
         
+    config = load_config()
+    email = config.get("myjd_email")
+    password = config.get("myjd_password")
+    device_name = config.get("myjd_devicename")
+    
+    if not email or not password or not device_name:
+        print("⚠️ MyJDownloader Zugangsdaten (E-Mail, Passwort, Gerätename) fehlen in der Konfiguration.")
+        return False
+
     try:
-        # Sicherstellen, dass der Ordner existiert
-        os.makedirs(FOLDERWATCH_DIR, exist_ok=True)
+        import pyjdapi
+        # Alternativ über direkte MyJDownloader API REST-Aufrufe oder pyjdapi, falls installiert.
+        # Da pyjdapi evtl. nicht installiert ist, nutzen wir hier einen sauberen direkten HTTP-Ansatz über die MyJDownloader Connect API:
+        # (Grundlegender MyJDownloader API Handshake vereinfacht für direkten Link-Versand)
+        print("📥 Übertrage Link an MyJDownloader API...")
         
-        # Eindeutigen Dateinamen über einen Zeitstempel generieren
-        filename = f"release_{int(time.time())}.crawljob"
-        file_path = os.path.join(FOLDERWATCH_DIR, filename)
+        # MyJDownloader Direct Connect / API Stub
+        # Schritt 1: MyJDownloader Session aufbauen
+        import hashlib
+        import base64
         
-        # Inhalt im .crawljob-Format definieren (inkl. Paketnamen und Autostart)
-        content = f"text={url}\npackageName={package_name}\nautoStart=TRUE\n"
+        # Einfacher Fallback: Wir nutzen die offizielle MyJDownloader API per Requests
+        # Da MyJDownloader Verschlüsselung nutzt, ist der offizielle API-Client via pyjdapi am sichersten.
+        # Prüfen / Installieren von pyjdapi falls nötig:
+        pass
+    except Exception as e:
+        print(f"❌ MyJDownloader API Fehler: {e}")
+        return False
+
+# Da pyjdapi für MyJDownloader etwas komplex ist, schreiben wir hier eine robuste Methode, 
+# die pyjdapi automatisch im Hintergrund installiert, falls sie noch nicht da ist:
+def send_to_jdownloader(url, package_name):
+    if not url:
+        return False
+    
+    config = load_config()
+    email = config.get("myjd_email")
+    password = config.get("myjd_password")
+    device_name = config.get("myjd_devicename")
+    
+    if not email or not password or not device_name:
+        print("⚠️ MyJDownloader-Zugangsdaten nicht vollständig konfiguriert.")
+        return False
+
+    try:
+        import myjdapi
+    except ImportError:
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "myjdapi"])
+            import myjdapi
+        except Exception as e:
+            print(f"❌ Konnte MyJDownloader-Bibliothek nicht installieren: {e}")
+            return False
+
+    try:
+        jd = myjdapi.Myjdapi()
+        jd.set_app_key("JellyfinNotifier")
+        if not jd.connect(email, password):
+            print("❌ MyJDownloader Login fehlgeschlagen.")
+            return False
         
-        # Datei in den Ordner schreiben
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        device = jd.get_device(device_name)
+        if not device:
+            print(f"❌ JDownloader-Gerät '{device_name}' nicht gefunden.")
+            return False
             
-        print(f"📥 Link erfolgreich an FolderWatch übergeben: {file_path}")
+        # Link in den Linkgrabber einspeisen
+        device.linkgrabber.add_links([{
+            'autostart': True,
+            'links': url,
+            'packageName': package_name
+        }])
+        print(f"📥 Link erfolgreich via MyJDownloader an '{device_name}' übergeben: {url}")
         return True
     except Exception as e:
-        print(f"❌ FolderWatch Fehler: {e}")
+        print(f"❌ MyJDownloader Fehler: {e}")
         return False
 
 def extract_hoster_link(release_page_url):
@@ -392,12 +451,12 @@ def perform_check():
                 jd_status = ""
                 if hoster_url:
                     if send_to_jdownloader(hoster_url, f"{matched_show['name']} - {ep_str}"):
-                        jd_status = " | 📥 <b>An JDownloader (FolderWatch) übergeben!</b>"
-                        send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download per FolderWatch an JDownloader übergeben.")
+                        jd_status = " | 📥 <b>An MyJDownloader übergeben!</b>"
+                        send_pushover("Download gestartet!", f"Für '{matched_show['name']}' ({ep_str}) wurde der Download per MyJDownloader an JDownloader übergeben.")
                         for ep in truly_missing:
                             add_to_db(f"{matched_show['name']} - {ep}")
                     else:
-                        jd_status = " | ⚠️ <i>FolderWatch Fehler</i>"
+                        jd_status = " | ⚠️ <i>MyJDownloader Fehler</i>"
                 else:
                     jd_status = " | ⚠️ <i>Kein Link gefunden</i>"
 
@@ -491,7 +550,7 @@ HTML_TEMPLATE = """
     <div class="container">
         <header style="text-align: center; margin-bottom: 2rem;">
             <h1>🔔 Jellyfin Notifier</h1>
-            <p style="color: var(--text-muted);">Smart-Lücken-Detektor & Playwright FolderWatch-Brücke</p>
+            <p style="color: var(--text-muted);">Smart-Lücken-Detektor & MyJDownloader API-Brücke</p>
         </header>
         <div class="card">
             {% if msg %}<div style="padding: 1rem; background: rgba(22,101,52,0.2); border: 1px solid #166534; color: #4ade80; border-radius: 8px; margin-bottom: 1rem;">{{ msg }}</div>{% endif %}
@@ -517,6 +576,21 @@ HTML_TEMPLATE = """
                         {% endfor %}
                     </select>
                 </div>
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 1.5rem 0;">
+                <h3 style="font-size: 1rem; color: var(--text-main); margin-bottom: 1rem;">MyJDownloader Zugangsdaten</h3>
+                <div class="form-group">
+                    <label>MyJDownloader E-Mail</label>
+                    <input type="text" name="myjd_email" value="{{ config.myjd_email }}">
+                </div>
+                <div class="form-group">
+                    <label>MyJDownloader Passwort</label>
+                    <input type="password" name="myjd_password" value="{{ config.myjd_password }}">
+                </div>
+                <div class="form-group">
+                    <label>JDownloader Gerätename (Device Name)</label>
+                    <input type="text" name="myjd_devicename" value="{{ config.myjd_devicename }}" placeholder="z.B. JDownloader@Server">
+                </div>
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 1.5rem 0;">
                 <div class="form-group">
                     <label>Webseiten-Cookie (Session/Cloudflare)</label>
                     <input type="text" name="website_cookie" value="{{ config.website_cookie }}" placeholder="cf_clearance=...">
@@ -594,7 +668,10 @@ def save():
         "website_cookie": request.form.get("website_cookie"),
         "rss_url": request.form.get("rss_url"),
         "check_interval_hours": float(request.form.get("check_interval_hours", 6)),
-        "selected_library_id": request.form.get("selected_library_id")
+        "selected_library_id": request.form.get("selected_library_id"),
+        "myjd_email": request.form.get("myjd_email"),
+        "myjd_password": request.form.get("myjd_password"),
+        "myjd_devicename": request.form.get("myjd_devicename")
     }
     save_config(new_config)
     
