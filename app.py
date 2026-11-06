@@ -30,7 +30,7 @@ CONFIG_FILE = "/app/data/config.json"
 DB_FILE = "/app/data/download_history.db"  # Lokale SQLite-Datenbank im persistenten Ordner
 TARGET_DIR = "/mnt/downloads/extracted"    # Windows-Freigabe Ordner für fertige Downloads
 PROXY_URL = "http://192.168.0.77:8888"     # Gluetun HTTP-Proxy für Internet-Anfragen
-FOLDERWATCH_DIR = "/var/lib/docker/volumes/jdownloader_jdow_config_data/_data/folderwatch" # Direkter Pfad zum FolderWatch-Ordner
+FOLDERWATCH_DIR = "/jdownloader_config/data/folderwatch" # Interner Mount-Pfad zum FolderWatch-Ordner
 
 DEFAULT_CONFIG = {
     "jellyfin_url": "http://192.168.0.73:8096",
